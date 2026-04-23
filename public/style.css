@@ -648,21 +648,37 @@ header {
   font-size: 12px;
   color: var(--fg-muted);
 }
+.file-path-badge.clickable,
+.diff-table.diff-hunk-table.clickable {
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.file-path-badge.clickable:hover {
+  background: var(--hover-hint);
+  color: var(--fg-accent);
+}
+.diff-table.diff-hunk-table.clickable:hover {
+  background: var(--hover-hint);
+}
+
+/* Flash highlight when scrolled-to via jump */
+@keyframes jump-flash-anim {
+  0%   { background: var(--hover-hint); box-shadow: 0 0 0 2px var(--fg-accent) inset; }
+  100% { background: transparent; box-shadow: 0 0 0 0 transparent inset; }
+}
+.diff-comment-row.jump-flash td,
+.diff-file.jump-flash {
+  animation: jump-flash-anim 2s ease-out;
+}
 .diff-hunk { margin: 0; padding: 8px 12px; background: var(--bg-subtle); border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.6; overflow-x: auto; }
 .diff-hunk code { background: none; padding: 0; font-size: inherit; }
 
-/* Mini diff hunk tables inside review threads.
-   Auto layout + shrink-to-fit line-number columns so content gets the rest.
-   Selectors use .diff-table.diff-hunk-table so they win over plain .diff-table. */
+/* Mini diff hunk tables inside review threads — inherit column sizing
+   from .diff-table; just tighten padding for the thread context. */
 .diff-table.diff-hunk-table {
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  table-layout: auto;
 }
 .diff-table.diff-hunk-table td.line-no {
-  width: 1%;
-  min-width: 0;
-  white-space: nowrap;
   padding: 0 8px;
 }
 .diff-table.diff-hunk-table .diff-hunk-header td {
@@ -785,6 +801,179 @@ header {
   border-top-right-radius: 0;
 }
 
+/* === Files Changed: two-pane layout (tree + diff content) === */
+#panel-files-changed { padding: 0; }
+.files-changed-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 16px;
+  padding: var(--spacing);
+  align-items: start;
+}
+.file-tree {
+  position: sticky;
+  top: 60px; /* sits below the sticky header */
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 13px;
+}
+.file-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex-wrap: wrap;
+}
+.file-tree-count { font-size: 13px; }
+.file-tree-actions {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg);
+}
+.tree-action-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+  font-family: inherit;
+}
+.tree-action-btn:last-child { border-right: none; }
+.tree-action-btn:hover { background: var(--bg-subtle); color: var(--fg); }
+
+.file-tree-root, .file-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.file-tree-root { padding: 6px 0; }
+
+.tree-folder > .folder-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 12px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition);
+}
+.tree-folder > .folder-toggle:hover { background: var(--bg-subtle); }
+.folder-chevron {
+  display: inline-block;
+  width: 10px;
+  font-size: 9px;
+  color: var(--fg-muted);
+  transition: transform var(--transition);
+}
+.tree-folder.collapsed > .folder-toggle > .folder-chevron { transform: rotate(-90deg); }
+.folder-name { flex: 1; word-break: break-all; }
+.folder-icon { font-size: 12px; opacity: 0.8; }
+
+.file-tree-list { padding-left: 14px; border-left: 1px solid var(--border-muted); margin-left: 16px; }
+
+.tree-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px 3px 4px;
+  transition: background var(--transition);
+}
+.tree-file:hover { background: var(--bg-subtle); }
+.tree-file.file-hidden { opacity: 0.5; }
+.tree-file.file-hidden .tree-file-name { text-decoration: line-through; }
+
+.file-visibility {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+.file-visibility:hover { color: var(--fg); background: var(--bg-inset); }
+.file-visibility .icon-eye,
+.file-visibility .icon-eye-slash { display: none; }
+.tree-file:not(.file-hidden) .file-visibility .icon-eye { display: inline-block; }
+.tree-file.file-hidden .file-visibility .icon-eye-slash { display: inline-block; }
+
+.tree-file-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.tree-file-name {
+  flex: 1;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  color: var(--fg);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-file-name:hover { color: var(--fg-accent); }
+.tree-file-stats { font-size: 11px; flex-shrink: 0; }
+
+.diff-content { min-width: 0; }
+.diff-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  flex-wrap: wrap;
+  box-shadow: var(--shadow-sm);
+}
+.diff-content-count { color: var(--fg-muted); font-weight: 500; }
+
 /* === File diff (Files Changed tab) === */
 .diff-file { margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg); }
 .diff-file-header {
@@ -818,13 +1007,15 @@ header {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 20px;
-  table-layout: fixed;
+  table-layout: auto;
 }
 .diff-table td { padding: 0; vertical-align: top; }
 .diff-table td.line-no {
-  width: 50px; min-width: 50px;
+  width: 1%;
+  min-width: 0;
+  white-space: nowrap;
   text-align: right;
-  padding: 0 8px;
+  padding: 0 10px;
   color: var(--fg-muted);
   user-select: none;
   background: var(--bg-subtle);
@@ -838,14 +1029,44 @@ header {
 .diff-line.deletion td.diff-content { background: var(--diff-del-bg); }
 .diff-line.deletion td.line-no { background: var(--diff-del-num); }
 .diff-hunk-header td { background: var(--diff-hunk-bg); color: var(--fg-muted); padding: 4px 12px; font-size: 12px; }
-.diff-comment-row td { padding: 12px 16px; background: var(--bg); border-top: 1px solid var(--border-muted); border-bottom: 1px solid var(--border-muted); }
+/* Comment row inside the diff table — give it visual breathing room
+   and a card-like container so it's clearly a comment, not code. */
+.diff-comment-row td {
+  padding: 12px;
+  background: var(--bg-subtle);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.diff-comment-row .inline-thread {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-accent);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  box-shadow: var(--shadow-sm);
+  max-width: 900px;
+}
 
 /* Inline thread in diff */
-.inline-thread-comment { margin-bottom: 8px; font-family: var(--font-sans); font-size: 13px; }
-.inline-thread-comment:last-child { margin-bottom: 0; }
-.inline-thread-header { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); margin-bottom: 2px; }
-.inline-thread-header strong { color: var(--fg); }
+.inline-thread-comment {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+.inline-thread-comment:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+.inline-thread-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+}
+.inline-thread-header strong { color: var(--fg); font-size: 13px; }
 .inline-thread-avatar { width: 20px; height: 20px; border-radius: 50%; vertical-align: middle; }
+.inline-thread-body { line-height: 1.5; }
 
 /* === Markdown rendered content === */
 .comment-body-inner h1 { font-size: 1.5em; border-bottom: 1px solid var(--border-muted); padding-bottom: 0.3em; }

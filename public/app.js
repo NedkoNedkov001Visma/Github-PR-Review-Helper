@@ -370,7 +370,8 @@ async function loadPR(owner, repo, number) {
       "panel-files-changed",
       data.files,
       data.reviewComments,
-      threadMap
+      threadMap,
+      currentPR
     );
 
     // Update counters

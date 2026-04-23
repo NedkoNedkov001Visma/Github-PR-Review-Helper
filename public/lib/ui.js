@@ -468,21 +468,73 @@ export function renderReview(review, threads, prInfo) {
 }
 
 // ---------------------------------------------------------------------------
+// Jump from a review thread header to its inline location in Files Changed
+// ---------------------------------------------------------------------------
+
+function jumpToDiffComment(path, rootId) {
+  showTab("files-changed");
+
+  // Expand the file section if it's currently collapsed.
+  const fileSection = document.querySelector(
+    `.diff-file[data-filename="${CSS.escape(path)}"]`
+  );
+  if (fileSection) {
+    const body = fileSection.querySelector(".diff-file-body");
+    if (body && body.hidden) body.hidden = false;
+  }
+
+  // Find the comment row, scroll to it, and flash it.
+  // If the specific thread row isn't in the current diff (outdated comment),
+  // fall back to scrolling/flashing the file section itself.
+  requestAnimationFrame(() => {
+    const target =
+      document.getElementById(`thread-${rootId}`) || fileSection;
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("jump-flash");
+    setTimeout(() => target.classList.remove("jump-flash"), 2000);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Review thread (inline comment thread)
 // ---------------------------------------------------------------------------
 
 export function renderReviewThread(thread, prInfo) {
   const container = el("div", "review-thread-container");
 
-  // File path badge
+  // If the root has a file path + id, make the path badge and diff hunk
+  // clickable jumps to the Files Changed tab at this thread's location.
+  const canJump =
+    thread.root && thread.root.path && thread.root.id != null;
+  const jump = canJump
+    ? () => jumpToDiffComment(thread.root.path, thread.root.id)
+    : null;
+
+  // File path badge (+ line number)
   if (thread.root && thread.root.path) {
-    const pathBadge = el("span", "file-path-badge", thread.root.path);
+    const pathBadge = el("span", "file-path-badge");
+    const pathText = thread.root.path;
+    const lineNo = thread.root.line ?? thread.root.original_line;
+    pathBadge.textContent = lineNo ? `${pathText}:${lineNo}` : pathText;
+
+    if (jump) {
+      pathBadge.classList.add("clickable");
+      pathBadge.title = "Jump to this line in Files Changed";
+      pathBadge.addEventListener("click", jump);
+    }
     container.appendChild(pathBadge);
   }
 
   // Diff hunk — rendered as a table with old/new line numbers
   if (thread.root && thread.root.diff_hunk) {
-    container.appendChild(renderDiffHunkTable(thread.root.diff_hunk));
+    const hunkTable = renderDiffHunkTable(thread.root.diff_hunk);
+    if (jump) {
+      hunkTable.classList.add("clickable");
+      hunkTable.title = "Jump to this line in Files Changed";
+      hunkTable.addEventListener("click", jump);
+    }
+    container.appendChild(hunkTable);
   }
 
   // Root comment
