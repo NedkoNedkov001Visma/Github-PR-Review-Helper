@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PR Reviewer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <a href="#" id="logo-link" class="logo">
+        <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"></path></svg>
+        PR Reviewer
+      </a>
+      <form id="pr-form">
+        <input id="pr-input" type="text"
+          placeholder="Paste PR URL or type owner/repo#123"
+          autocomplete="off" />
+        <button type="submit">Go</button>
+      </form>
+    </div>
+  </header>
+
+  <main id="app">
+    <!-- Index panel (default) -->
+    <section id="index-panel">
+      <div class="index-hero">
+        <h2>Review pull requests, faster.</h2>
+        <p class="index-subtitle">Enter a repository to browse its pull requests, or paste a PR URL above.</p>
+      </div>
+
+      <div class="index-search">
+        <form id="repo-form">
+          <div class="search-input-wrap">
+            <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z"></path></svg>
+            <input id="repo-input" type="text"
+              placeholder="Search repositories... (e.g. facebook/react)"
+              autocomplete="off" />
+          </div>
+          <button type="submit">List PRs</button>
+        </form>
+      </div>
+
+      <div id="recent-repos"></div>
+
+      <div id="pr-list-controls" hidden>
+        <div class="filter-bar">
+          <button class="filter-btn active" data-state="open">Open</button>
+          <button class="filter-btn" data-state="closed">Closed</button>
+          <button class="filter-btn" data-state="all">All</button>
+        </div>
+        <span id="pr-list-summary" class="muted"></span>
+      </div>
+      <div id="pr-list"></div>
+    </section>
+
+    <!-- PR panel (shown when a PR is loaded) -->
+    <section id="pr-panel" hidden>
+      <div id="pr-header"></div>
+
+      <nav id="tab-nav" role="tablist">
+        <button role="tab" aria-selected="true" data-tab="conversation">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"></path></svg>
+          Conversation <span class="counter" id="conv-count">0</span>
+        </button>
+        <button role="tab" aria-selected="false" data-tab="ai-comments">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.828.722a.5.5 0 0 1 .212.677L6.895 7.502h4.277a.5.5 0 0 1 .39.812l-5.474 6.837a.5.5 0 0 1-.89-.415L6.67 9.14H2.5a.5.5 0 0 1-.451-.715l4.7-8.252A.5.5 0 0 1 9.828.722Z"></path></svg>
+          AI Comments <span class="counter" id="ai-count">0</span>
+        </button>
+        <button role="tab" aria-selected="false" data-tab="files-changed">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"></path></svg>
+          Files Changed <span class="counter" id="files-count">0</span>
+        </button>
+      </nav>
+
+      <div id="tab-panels">
+        <div id="panel-conversation" role="tabpanel"></div>
+        <div id="panel-ai-comments" role="tabpanel" hidden></div>
+        <div id="panel-files-changed" role="tabpanel" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="loading" hidden>
+    <div class="spinner"></div>
+    <p>Loading...</p>
+  </div>
+
+  <div id="error" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
