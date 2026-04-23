@@ -7,9 +7,18 @@ export async function fetchPR(owner, repo, number) {
   return res.json();
 }
 
-export async function fetchPulls(owner, repo, state = "open") {
+export async function fetchRepoUsers(owner, repo) {
+  const res = await fetch(`/api/repos/${owner}/${repo}/users`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchPulls(owner, repo, state = "open", author = "", reviewer = "") {
+  const params = new URLSearchParams({ state });
+  if (author) params.set("author", author);
+  if (reviewer) params.set("reviewer", reviewer);
   const res = await fetch(
-    `/api/repos/${owner}/${repo}/pulls?state=${state}`
+    `/api/repos/${owner}/${repo}/pulls?${params}`
   );
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));

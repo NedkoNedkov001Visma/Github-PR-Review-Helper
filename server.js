@@ -144,8 +144,69 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
     const state = req.query.state || "open";
     const perPage = Math.min(parseInt(req.query.per_page) || 50, 100);
     const page = parseInt(req.query.page) || 1;
+    const author = (req.query.author || "").trim();
+    const reviewer = (req.query.reviewer || "").trim();
     const token = getToken();
-    // Single page fetch — don't paginate the entire history
+
+    // If author/reviewer filters are set, use the Search API.
+    if (author || reviewer) {
+      const normalize = (items) =>
+        (items || []).map((it) => ({
+          number: it.number,
+          title: it.title,
+          state: it.state,
+          draft: it.draft,
+          user: it.user,
+          labels: it.labels,
+          created_at: it.created_at,
+          updated_at: it.updated_at,
+          comments: it.comments,
+          merged_at: it.pull_request && it.pull_request.merged_at,
+          html_url: it.html_url,
+        }));
+
+      const buildQuery = (reviewerClause) =>
+        [
+          `repo:${owner}/${repo}`,
+          `is:pr`,
+          state !== "all" ? `state:${state}` : null,
+          author ? `author:${author}` : null,
+          reviewerClause,
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+      const runSearch = async (q) => {
+        const { data } = await ghFetch(
+          `/search/issues?q=${encodeURIComponent(q)}&per_page=${perPage}&page=${page}&sort=updated&order=desc`,
+          token
+        );
+        return normalize(data.items);
+      };
+
+      let merged;
+      if (reviewer) {
+        // GitHub search can't OR `reviewed-by:` and `review-requested:` in one
+        // query, so make two parallel searches and union the results.
+        const [reviewedBy, requested] = await Promise.all([
+          runSearch(buildQuery(`reviewed-by:${reviewer}`)),
+          runSearch(buildQuery(`review-requested:${reviewer}`)),
+        ]);
+        const byNumber = new Map();
+        for (const pr of [...reviewedBy, ...requested]) {
+          if (!byNumber.has(pr.number)) byNumber.set(pr.number, pr);
+        }
+        merged = [...byNumber.values()].sort(
+          (a, b) => new Date(b.updated_at) - new Date(a.updated_at)
+        );
+      } else {
+        merged = await runSearch(buildQuery(null));
+      }
+
+      return res.json(merged);
+    }
+
+    // No user filters — use the faster /pulls endpoint
     const { data } = await ghFetch(
       `/repos/${owner}/${repo}/pulls?state=${state}&per_page=${perPage}&page=${page}&sort=updated&direction=desc`,
       token
@@ -153,6 +214,33 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error("Error fetching pulls:", err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// List users associated with a repo (contributors + assignees).
+// Used to populate the author/reviewer filter dropdowns.
+app.get("/api/repos/:owner/:repo/users", async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const token = getToken();
+    const [contributors, assignees] = await Promise.allSettled([
+      ghFetch(`/repos/${owner}/${repo}/contributors?per_page=100`, token),
+      ghFetch(`/repos/${owner}/${repo}/assignees?per_page=100`, token),
+    ]);
+    const users = new Map();
+    const add = (u) => {
+      if (!u || !u.login) return;
+      if (u.type === "Bot") return;
+      if (!users.has(u.login)) {
+        users.set(u.login, { login: u.login, avatar_url: u.avatar_url });
+      }
+    };
+    if (contributors.status === "fulfilled") contributors.value.data.forEach(add);
+    if (assignees.status === "fulfilled") assignees.value.data.forEach(add);
+    res.json([...users.values()]);
+  } catch (err) {
+    console.error("Error fetching users:", err.message);
     res.status(err.status || 500).json({ error: err.message });
   }
 });

@@ -4,6 +4,7 @@ import {
   resolveThread,
   unresolveThread,
 } from "./api.js";
+import { parsePatch } from "./diff-renderer.js";
 
 // ---------------------------------------------------------------------------
 // Markdown rendering (regex-based GFM subset)
@@ -248,6 +249,32 @@ export function renderPRHeader(pr, containerId = "pr-header") {
   if (!container) return;
   container.innerHTML = "";
 
+  // Breadcrumb: owner / repo — clickable back to the repo PR list
+  const repoFull = pr.base?.repo?.full_name;
+  if (repoFull) {
+    const [owner, repo] = repoFull.split("/");
+    const crumb = el("div", "pr-breadcrumb");
+
+    const ownerLink = document.createElement("a");
+    ownerLink.href = `https://github.com/${owner}`;
+    ownerLink.target = "_blank";
+    ownerLink.rel = "noopener";
+    ownerLink.className = "breadcrumb-link";
+    ownerLink.textContent = owner;
+    crumb.appendChild(ownerLink);
+
+    crumb.appendChild(document.createTextNode(" / "));
+
+    const repoLink = document.createElement("a");
+    repoLink.href = `#repo=${encodeURIComponent(repoFull)}`;
+    repoLink.className = "breadcrumb-link breadcrumb-repo";
+    repoLink.textContent = repo;
+    repoLink.title = `Back to ${repoFull} PRs`;
+    crumb.appendChild(repoLink);
+
+    container.appendChild(crumb);
+  }
+
   // Title + number
   const heading = el("h2", "pr-title");
   heading.textContent = `${pr.title} #${pr.number}`;
@@ -453,28 +480,9 @@ export function renderReviewThread(thread, prInfo) {
     container.appendChild(pathBadge);
   }
 
-  // Diff hunk
+  // Diff hunk — rendered as a table with old/new line numbers
   if (thread.root && thread.root.diff_hunk) {
-    const pre = document.createElement("pre");
-    pre.classList.add("diff-hunk");
-    const code = document.createElement("code");
-
-    // Colour diff lines
-    const lines = thread.root.diff_hunk.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const span = document.createElement("span");
-      span.textContent = line;
-      if (line.startsWith("+")) {
-        span.classList.add("diff-add");
-      } else if (line.startsWith("-")) {
-        span.classList.add("diff-remove");
-      }
-      code.appendChild(span);
-      if (i < lines.length - 1) code.appendChild(document.createTextNode("\n"));
-    }
-    pre.appendChild(code);
-    container.appendChild(pre);
+    container.appendChild(renderDiffHunkTable(thread.root.diff_hunk));
   }
 
   // Root comment
@@ -659,6 +667,64 @@ export function renderTimeline(containerId, entries, prInfo) {
 // ---------------------------------------------------------------------------
 // Internal helper: build a single comment block (used in threads)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Mini diff hunk table (used inside review threads, Conversation + AI tabs)
+// ---------------------------------------------------------------------------
+
+function renderDiffHunkTable(diffHunkStr) {
+  const hunks = parsePatch(diffHunkStr);
+  const table = document.createElement("table");
+  table.className = "diff-table diff-hunk-table";
+
+  if (hunks.length === 0) {
+    // Fallback: render as pre-formatted text if parsing fails
+    const pre = document.createElement("pre");
+    pre.className = "diff-hunk";
+    pre.textContent = diffHunkStr;
+    return pre;
+  }
+
+  for (const hunk of hunks) {
+    // Hunk header row (the @@ line with function context)
+    const headerRow = document.createElement("tr");
+    headerRow.className = "diff-hunk-header";
+    const headerCell = document.createElement("td");
+    headerCell.colSpan = 3;
+    headerCell.textContent = hunk.header;
+    headerRow.appendChild(headerCell);
+    table.appendChild(headerRow);
+
+    for (const line of hunk.lines) {
+      const tr = document.createElement("tr");
+      tr.className = `diff-line ${line.type}`;
+
+      const oldTd = document.createElement("td");
+      oldTd.className = "line-no old";
+      oldTd.textContent = line.oldLineNo != null ? line.oldLineNo : "";
+      tr.appendChild(oldTd);
+
+      const newTd = document.createElement("td");
+      newTd.className = "line-no new";
+      newTd.textContent = line.newLineNo != null ? line.newLineNo : "";
+      tr.appendChild(newTd);
+
+      const contentTd = document.createElement("td");
+      contentTd.className = "diff-content";
+      const marker = document.createElement("span");
+      marker.className = "diff-marker";
+      marker.textContent =
+        line.type === "addition" ? "+" : line.type === "deletion" ? "-" : " ";
+      contentTd.appendChild(marker);
+      contentTd.appendChild(document.createTextNode(line.content));
+      tr.appendChild(contentTd);
+
+      table.appendChild(tr);
+    }
+  }
+
+  return table;
+}
 
 function buildCommentBlock(comment) {
   const block = el("div", "thread-comment");
