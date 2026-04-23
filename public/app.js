@@ -7,6 +7,7 @@ import {
   renderTimeline,
   showTab,
   formatTimestamp,
+  resetCommentStateCaches,
 } from "./lib/ui.js";
 
 // --- State ---
@@ -346,6 +347,8 @@ async function navigateToPR(owner, repo, number) {
 
 async function loadPR(owner, repo, number) {
   currentPR = { owner, repo, number };
+  // Reset per-PR memoization so a fresh render reads current localStorage.
+  resetCommentStateCaches();
   clearError();
   setLoading(true);
   document.getElementById("index-panel").hidden = true;
@@ -458,14 +461,189 @@ function initThemeToggle() {
   });
 }
 
-// Apply saved theme immediately (before rendering) to prevent flash
+// Apply saved theme immediately (before rendering) to prevent flash.
+// Default is light — we only switch to dark when the user has explicitly
+// chosen it. System preference is ignored so the default stays light
+// regardless of the OS setting.
 (function applySavedTheme() {
   const saved = localStorage.getItem(THEME_KEY);
   if (saved === "dark") applyTheme("dark");
-  else if (!saved && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-    applyTheme("dark");
-  }
 })();
+
+// --- Clear data modal ---
+
+/**
+ * Inspect localStorage and return a summary of what the app has stored,
+ * grouped by category. Each category has a label, a summary line shown
+ * in the UI, and a list of keys that should be removed to clear it.
+ */
+function inventoryStoredData() {
+  const categories = [
+    {
+      id: "recent-repos",
+      label: "Recent repositories",
+      summary: "",
+      keys: [],
+    },
+    {
+      id: "theme",
+      label: "Theme preference",
+      summary: "",
+      keys: [],
+    },
+    {
+      id: "file-state",
+      label: "Per-PR file state",
+      summary: "",
+      keys: [],
+    },
+  ];
+
+  // Recent repos
+  try {
+    const recent = JSON.parse(localStorage.getItem(RECENT_KEY)) || [];
+    if (recent.length) {
+      categories[0].keys.push(RECENT_KEY);
+      categories[0].summary = `${recent.length} repo${recent.length !== 1 ? "s" : ""} in history`;
+    } else {
+      categories[0].summary = "Nothing stored";
+    }
+  } catch {
+    categories[0].summary = "Nothing stored";
+  }
+
+  // Theme
+  const theme = localStorage.getItem(THEME_KEY);
+  if (theme) {
+    categories[1].keys.push(THEME_KEY);
+    categories[1].summary = `Currently: ${theme === "dark" ? "Dark" : "Light"}`;
+  } else {
+    categories[1].summary = "Using system preference";
+  }
+
+  // Per-PR UI state (hidden files, expand/collapse, collapsed comments)
+  const prKeys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    if (
+      key.startsWith("pr-reviewer-file-state:") ||
+      key.startsWith("pr-reviewer-hidden-files:") ||
+      key.startsWith("pr-reviewer-collapsed-comments:") ||
+      key.startsWith("pr-reviewer-seen-comments:")
+    ) {
+      prKeys.push(key);
+    }
+  }
+  // Count unique PRs
+  const uniquePrs = new Set(
+    prKeys.map((k) => k.split(":").slice(1).join(":"))
+  );
+  categories[2].keys = prKeys;
+  categories[2].summary = uniquePrs.size
+    ? `UI state for ${uniquePrs.size} PR${uniquePrs.size !== 1 ? "s" : ""}`
+    : "Nothing stored";
+
+  return categories;
+}
+
+function initClearDataModal() {
+  const btn = document.getElementById("clear-data-btn");
+  const modal = document.getElementById("clear-data-modal");
+  if (!btn || !modal) return;
+
+  const optsContainer = document.getElementById("clear-data-options");
+  const confirmBtn = document.getElementById("clear-data-confirm");
+
+  const renderOptions = () => {
+    const cats = inventoryStoredData();
+    optsContainer.innerHTML = "";
+    for (const cat of cats) {
+      const isEmpty = cat.keys.length === 0;
+      const row = document.createElement("label");
+      row.className = "clear-data-option";
+      if (isEmpty) row.classList.add("is-empty");
+      row.innerHTML = `
+        <input type="checkbox" data-category="${cat.id}" ${isEmpty ? "disabled" : "checked"}>
+        <div class="clear-data-option-body">
+          <strong>${cat.label}</strong>
+          <span class="muted">${cat.summary}</span>
+        </div>
+      `;
+      optsContainer.appendChild(row);
+    }
+  };
+
+  const openModal = () => {
+    renderOptions();
+    modal.hidden = false;
+    document.body.style.overflow = "hidden";
+  };
+
+  const closeModal = () => {
+    modal.hidden = true;
+    document.body.style.overflow = "";
+  };
+
+  btn.addEventListener("click", openModal);
+
+  // Any element with data-close dismisses the modal
+  modal.addEventListener("click", (e) => {
+    if (e.target.closest("[data-close]")) closeModal();
+  });
+
+  // Escape key closes it
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.hidden) closeModal();
+  });
+
+  confirmBtn.addEventListener("click", () => {
+    const selected = [
+      ...optsContainer.querySelectorAll("input[type='checkbox']:checked"),
+    ].map((cb) => cb.dataset.category);
+    if (selected.length === 0) {
+      closeModal();
+      return;
+    }
+
+    const cats = inventoryStoredData();
+    let keysRemoved = 0;
+    for (const cat of cats) {
+      if (!selected.includes(cat.id)) continue;
+      for (const key of cat.keys) {
+        try {
+          localStorage.removeItem(key);
+          keysRemoved++;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    closeModal();
+
+    // Apply immediate side effects of clearing
+    if (selected.includes("theme")) {
+      // Revert to the default (light) after clearing the stored preference
+      document.documentElement.removeAttribute("data-theme");
+    }
+    if (selected.includes("file-state")) {
+      resetCommentStateCaches();
+    }
+
+    // Send the user back to a clean home (Index) view so the reset is obvious.
+    location.hash = "";
+    document.getElementById("pr-panel").hidden = true;
+    document.getElementById("index-panel").hidden = false;
+    document.getElementById("current-repo-header").hidden = true;
+    document.getElementById("pr-list-controls").hidden = true;
+    document.getElementById("pr-list").innerHTML = "";
+    currentRepo = null;
+    currentPR = null;
+    document.title = "PR Reviewer";
+    renderRecentRepos();
+  });
+}
 
 // --- Init ---
 
@@ -504,6 +682,7 @@ function init() {
   initTabs();
   initFilterButtons();
   initThemeToggle();
+  initClearDataModal();
   renderRecentRepos();
 
   // Handle initial hash

@@ -341,24 +341,48 @@ export function renderPRHeader(pr, containerId = "pr-header") {
  * Make a header toggle visibility of all sibling elements that follow it
  * within the same parent. Adds a chevron indicator.
  */
-function makeCollapsible(header) {
+/**
+ * Make a header toggle visibility of all sibling elements that follow it.
+ * If `opts` is passed with { id, collapsedSet, save, initiallyCollapsed },
+ * the toggle state is persisted and restored.
+ */
+function makeCollapsible(header, opts = {}) {
   header.classList.add("collapsible-header");
   const chevron = el("span", "collapse-chevron", "\u25BC");
   header.insertBefore(chevron, header.firstChild);
 
-  header.addEventListener("click", () => {
-    const collapsed = header.classList.toggle("collapsed");
-    // Hide every sibling after the header in the same parent
+  const applyCollapsed = (collapsed) => {
+    header.classList.toggle("collapsed", collapsed);
     let sibling = header.nextElementSibling;
     while (sibling) {
       sibling.hidden = collapsed;
       sibling = sibling.nextElementSibling;
     }
+  };
+
+  // Initial state
+  if (opts.initiallyCollapsed) {
+    applyCollapsed(true);
+  }
+
+  header.addEventListener("click", () => {
+    const nowCollapsed = !header.classList.contains("collapsed");
+    applyCollapsed(nowCollapsed);
+    if (opts.id && opts.collapsedSet) {
+      if (nowCollapsed) opts.collapsedSet.add(opts.id);
+      else opts.collapsedSet.delete(opts.id);
+      opts.save?.();
+    }
   });
+
+  // Expose helpers so bulk actions can toggle without re-firing click handlers
+  header._setCollapsed = applyCollapsed;
 }
 
-export function renderIssueComment(comment) {
+export function renderIssueComment(comment, collapseCtx, seenCtx) {
   const item = el("div", "timeline-item");
+  const commentId = `ic-${comment.id}`;
+  item.dataset.commentId = commentId;
 
   // Avatar column
   const avatarWrap = el("div", "timeline-item-avatar");
@@ -382,6 +406,7 @@ export function renderIssueComment(comment) {
   header.appendChild(author);
   const ts = el("span", "timestamp", " " + formatTimestamp(comment.created_at));
   header.appendChild(ts);
+  markNewIfUnseen(header, commentId, seenCtx);
   content.appendChild(header);
 
   // Body
@@ -391,7 +416,12 @@ export function renderIssueComment(comment) {
   body.appendChild(inner);
   content.appendChild(body);
 
-  makeCollapsible(header);
+  makeCollapsible(header, {
+    id: commentId,
+    collapsedSet: collapseCtx?.collapsedComments,
+    save: collapseCtx?.save,
+    initiallyCollapsed: collapseCtx?.collapsedComments?.has(commentId),
+  });
 
   item.appendChild(content);
   return item;
@@ -408,8 +438,10 @@ const REVIEW_STATE_LABELS = {
   DISMISSED: { text: "Dismissed", cls: "review-dismissed" },
 };
 
-export function renderReview(review, threads, prInfo) {
+export function renderReview(review, threads, prInfo, collapseCtx, seenCtx) {
   const item = el("div", ["timeline-item", "review-item"]);
+  const commentId = `rv-${review.id}`;
+  item.dataset.commentId = commentId;
 
   // Avatar
   const avatarWrap = el("div", "timeline-item-avatar");
@@ -441,6 +473,7 @@ export function renderReview(review, threads, prInfo) {
 
   const ts = el("span", "timestamp", " " + formatTimestamp(review.submitted_at || review.created_at));
   header.appendChild(ts);
+  markNewIfUnseen(header, commentId, seenCtx);
   content.appendChild(header);
 
   // Review body
@@ -456,12 +489,17 @@ export function renderReview(review, threads, prInfo) {
   if (threads && threads.length) {
     const threadsContainer = el("div", "review-threads");
     for (const thread of threads) {
-      threadsContainer.appendChild(renderReviewThread(thread, prInfo));
+      threadsContainer.appendChild(renderReviewThread(thread, prInfo, seenCtx));
     }
     content.appendChild(threadsContainer);
   }
 
-  makeCollapsible(header);
+  makeCollapsible(header, {
+    id: commentId,
+    collapsedSet: collapseCtx?.collapsedComments,
+    save: collapseCtx?.save,
+    initiallyCollapsed: collapseCtx?.collapsedComments?.has(commentId),
+  });
 
   item.appendChild(content);
   return item;
@@ -500,7 +538,7 @@ function jumpToDiffComment(path, rootId) {
 // Review thread (inline comment thread)
 // ---------------------------------------------------------------------------
 
-export function renderReviewThread(thread, prInfo) {
+export function renderReviewThread(thread, prInfo, seenCtx) {
   const container = el("div", "review-thread-container");
 
   // If the root has a file path + id, make the path badge and diff hunk
@@ -539,13 +577,13 @@ export function renderReviewThread(thread, prInfo) {
 
   // Root comment
   if (thread.root) {
-    container.appendChild(buildCommentBlock(thread.root));
+    container.appendChild(buildCommentBlock(thread.root, seenCtx));
   }
 
   // Replies
   if (thread.replies && thread.replies.length) {
     for (const reply of thread.replies) {
-      const replyEl = buildCommentBlock(reply);
+      const replyEl = buildCommentBlock(reply, seenCtx);
       replyEl.classList.add("thread-reply");
       container.appendChild(replyEl);
     }
@@ -573,7 +611,7 @@ export function renderReviewThread(thread, prInfo) {
         body
       );
       // Append new reply into the thread
-      const newEl = buildCommentBlock(newComment);
+      const newEl = buildCommentBlock(newComment, seenCtx);
       newEl.classList.add("thread-reply");
       container.insertBefore(newEl, replyForm);
       textarea.value = "";
@@ -626,12 +664,15 @@ export function renderReviewThread(thread, prInfo) {
 // Standalone thread (thread shown outside its parent review)
 // ---------------------------------------------------------------------------
 
-export function renderStandaloneThread(thread, reviewMeta, prInfo) {
+export function renderStandaloneThread(thread, reviewMeta, prInfo, collapseCtx, seenCtx) {
   const wrapper = el("div", "standalone-thread");
+  const commentId = `st-${thread.root?.id}`;
+  wrapper.dataset.commentId = commentId;
 
-  // Small header identifying which review it belongs to
+  // Small header identifying which review it belongs to.
+  // This header is always present — we use it as the collapse handle.
+  const metaHeader = el("div", "standalone-thread-meta");
   if (reviewMeta) {
-    const metaHeader = el("div", "standalone-thread-meta");
     const reviewAuthor = el("strong", null, reviewMeta.user ? reviewMeta.user.login : "unknown");
     metaHeader.appendChild(document.createTextNode("From review by "));
     metaHeader.appendChild(reviewAuthor);
@@ -644,10 +685,28 @@ export function renderStandaloneThread(thread, reviewMeta, prInfo) {
       metaHeader.appendChild(document.createTextNode(" "));
       metaHeader.appendChild(badge);
     }
-    wrapper.appendChild(metaHeader);
+  } else {
+    // Fall back to the path + line if no review meta
+    const pathLabel = el(
+      "span",
+      null,
+      thread.root?.path
+        ? `${thread.root.path}${thread.root.line ? ":" + thread.root.line : ""}`
+        : "Review thread"
+    );
+    metaHeader.appendChild(pathLabel);
   }
+  markNewIfUnseen(metaHeader, commentId, seenCtx);
+  wrapper.appendChild(metaHeader);
 
-  wrapper.appendChild(renderReviewThread(thread, prInfo));
+  wrapper.appendChild(renderReviewThread(thread, prInfo, seenCtx));
+
+  makeCollapsible(metaHeader, {
+    id: commentId,
+    collapsedSet: collapseCtx?.collapsedComments,
+    save: collapseCtx?.save,
+    initiallyCollapsed: collapseCtx?.collapsedComments?.has(commentId),
+  });
 
   return wrapper;
 }
@@ -661,22 +720,112 @@ export function renderTimeline(containerId, entries, prInfo) {
   if (!container) return;
   container.innerHTML = "";
 
+  // Per-PR persisted state: collapsed items + seen items.
+  // Both contexts are shared across the Conversation + AI Comments tabs.
+  const collapseCtx = prInfo ? getCollapseContext(prInfo) : null;
+  const seenCtx = prInfo ? getSeenContext(prInfo) : null;
+
+  // Bulk-action header above the timeline
+  const actionBar = el("div", "timeline-action-bar");
+  const countLabel = el("span", "timeline-action-count");
+  countLabel.textContent = `${entries.length} item${entries.length !== 1 ? "s" : ""}`;
+  actionBar.appendChild(countLabel);
+
+  const actions = el("div", "file-tree-actions");
+  const expandAllBtn = el("button", "tree-action-btn", "Expand all");
+  expandAllBtn.type = "button";
+  expandAllBtn.title = "Expand all comments";
+  const collapseOldBtn = el("button", "tree-action-btn", "Collapse old");
+  collapseOldBtn.type = "button";
+  collapseOldBtn.title = "Collapse everything except items marked New";
+  const collapseAllBtn = el("button", "tree-action-btn", "Collapse all");
+  collapseAllBtn.type = "button";
+  collapseAllBtn.title = "Collapse all comments";
+  actions.appendChild(expandAllBtn);
+  actions.appendChild(collapseOldBtn);
+  actions.appendChild(collapseAllBtn);
+  actionBar.appendChild(actions);
+  container.appendChild(actionBar);
+
   for (const entry of entries) {
+    let commentId = null;
     switch (entry.type) {
       case "issue_comment":
-        container.appendChild(renderIssueComment(entry.data));
+        container.appendChild(renderIssueComment(entry.data, collapseCtx, seenCtx));
+        commentId = `ic-${entry.data.id}`;
         break;
       case "review":
-        container.appendChild(renderReview(entry.data, entry.threads || [], prInfo));
+        container.appendChild(
+          renderReview(entry.data, entry.threads || [], prInfo, collapseCtx, seenCtx)
+        );
+        commentId = `rv-${entry.data.id}`;
         break;
       case "review_thread":
-        container.appendChild(renderStandaloneThread(entry.data, entry.reviewMeta, prInfo));
+        container.appendChild(
+          renderStandaloneThread(entry.data, entry.reviewMeta, prInfo, collapseCtx, seenCtx)
+        );
+        commentId = `st-${entry.data.root?.id}`;
         break;
       default:
-        // Unknown entry type — skip
         break;
     }
+    // Mark every rendered item as seen for future visits
+    if (commentId) seenCtx?.markSeen(commentId);
   }
+
+  // Bubble "New" badges up: if any nested reply is new, the parent
+  // timeline item's own header also gets a badge so the activity is
+  // visible at the top level.
+  for (const parent of container.querySelectorAll(
+    ":scope > .timeline-item, :scope > .standalone-thread"
+  )) {
+    const ownHeader = parent.querySelector(
+      ":scope > .timeline-item-content > .comment-header, :scope > .standalone-thread-meta"
+    );
+    if (!ownHeader || ownHeader.querySelector(":scope > .new-comment-badge")) {
+      continue; // no header or already marked new
+    }
+    if (parent.querySelector(".new-comment-badge")) {
+      const badge = el("span", "new-comment-badge", "New");
+      ownHeader.appendChild(badge);
+    }
+  }
+
+  // Persist the updated seen set (drops "New" badges on the next load)
+  seenCtx?.save();
+
+  // Bulk collapse / expand handlers — operate on this timeline's items
+  expandAllBtn.addEventListener("click", () => {
+    for (const header of container.querySelectorAll(".collapsible-header.collapsed")) {
+      header._setCollapsed?.(false);
+      const idEl = header.closest("[data-comment-id]");
+      if (idEl) collapseCtx?.collapsedComments.delete(idEl.dataset.commentId);
+    }
+    collapseCtx?.save();
+  });
+  collapseAllBtn.addEventListener("click", () => {
+    for (const header of container.querySelectorAll(
+      ".collapsible-header:not(.collapsed)"
+    )) {
+      header._setCollapsed?.(true);
+      const idEl = header.closest("[data-comment-id]");
+      if (idEl) collapseCtx?.collapsedComments.add(idEl.dataset.commentId);
+    }
+    collapseCtx?.save();
+  });
+  // Collapse everything EXCEPT items that carry the "New" badge
+  collapseOldBtn.addEventListener("click", () => {
+    for (const header of container.querySelectorAll(
+      ".collapsible-header:not(.collapsed)"
+    )) {
+      const idEl = header.closest("[data-comment-id]");
+      if (!idEl) continue;
+      if (idEl.querySelector(".new-comment-badge")) continue; // skip new items
+      header._setCollapsed?.(true);
+      collapseCtx?.collapsedComments.add(idEl.dataset.commentId);
+    }
+    collapseCtx?.save();
+  });
 
   // New comment form at the bottom of the conversation panel
   const formWrap = el("div", "new-comment-form");
@@ -723,6 +872,120 @@ export function renderTimeline(containerId, entries, prInfo) {
 // ---------------------------------------------------------------------------
 // Mini diff hunk table (used inside review threads, Conversation + AI tabs)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Per-PR collapsed-comment persistence
+// ---------------------------------------------------------------------------
+//
+// Comments/reviews/standalone threads each get a stable id in the form
+// `ic-<id>` / `rv-<id>` / `st-<rootId>`. The ids of currently-collapsed
+// items are stored in localStorage so the state survives reloads and tab
+// switches.
+
+function collapseStorageKey(prInfo) {
+  return prInfo
+    ? `pr-reviewer-collapsed-comments:${prInfo.owner}/${prInfo.repo}/${prInfo.number}`
+    : null;
+}
+
+/** Returns a { collapsedComments: Set<string>, save(): void } context. */
+function getCollapseContext(prInfo) {
+  const key = collapseStorageKey(prInfo);
+  let initial = [];
+  if (key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) initial = parsed;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const collapsedComments = new Set(initial);
+  const save = () => {
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify([...collapsedComments]));
+    } catch {
+      /* ignore */
+    }
+  };
+  return { collapsedComments, save };
+}
+
+// ---------------------------------------------------------------------------
+// Per-PR "seen comments" persistence
+// ---------------------------------------------------------------------------
+//
+// Tracks which comments the user has already seen so we can show a "New"
+// label next to any comment added since the last visit.
+//
+// Behavior:
+// - First visit (no stored key): silently mark every comment as seen — no
+//   "New" labels. The user hasn't had a chance to see anything yet.
+// - Subsequent visits: any ID not in the stored set gets a "New" badge,
+//   then the set is updated to include every visible ID.
+
+function seenStorageKey(prInfo) {
+  return prInfo
+    ? `pr-reviewer-seen-comments:${prInfo.owner}/${prInfo.repo}/${prInfo.number}`
+    : null;
+}
+
+// Per-PR cache. Conversation and AI Comments both render from renderTimeline
+// sequentially — they must share one context so the first saves don't flip
+// the second's "first visit" detection.
+const _seenContextCache = new Map();
+
+function getSeenContext(prInfo) {
+  const key = seenStorageKey(prInfo);
+  if (!key) return null;
+  if (_seenContextCache.has(key)) return _seenContextCache.get(key);
+
+  const hadKey = localStorage.getItem(key) !== null;
+  let stored = [];
+  if (hadKey) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key));
+      if (Array.isArray(parsed)) stored = parsed;
+    } catch {
+      /* ignore */
+    }
+  }
+  const seenComments = new Set(stored);
+  const ctx = {
+    isFirstVisit: !hadKey,
+    isNew: (id) => hadKey && !seenComments.has(id),
+    markSeen: (id) => seenComments.add(id),
+    save: () => {
+      try {
+        localStorage.setItem(key, JSON.stringify([...seenComments]));
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+  _seenContextCache.set(key, ctx);
+  return ctx;
+}
+
+/** Reset cached contexts — called on PR navigation. */
+export function resetCommentStateCaches() {
+  _seenContextCache.clear();
+}
+
+/**
+ * Append a "New" badge to a header element when the given id is unseen.
+ * Call this from each renderer right after adding the timestamp.
+ */
+function markNewIfUnseen(header, id, seenCtx) {
+  if (seenCtx && seenCtx.isNew(id)) {
+    const badge = el("span", "new-comment-badge", "New");
+    header.appendChild(badge);
+  }
+}
 
 function renderDiffHunkTable(diffHunkStr) {
   const hunks = parsePatch(diffHunkStr);
@@ -778,8 +1041,11 @@ function renderDiffHunkTable(diffHunkStr) {
   return table;
 }
 
-function buildCommentBlock(comment) {
+function buildCommentBlock(comment, seenCtx) {
   const block = el("div", "thread-comment");
+  // Stable id so seen-tracking and the Collapse old button can find replies
+  const commentId = `rc-${comment.id}`;
+  block.dataset.commentId = commentId;
 
   const header = el("div", "comment-header");
   if (comment.user && comment.user.avatar_url) {
@@ -796,6 +1062,7 @@ function buildCommentBlock(comment) {
 
   const ts = el("span", "timestamp", " " + formatTimestamp(comment.created_at || comment.updated_at));
   header.appendChild(ts);
+  markNewIfUnseen(header, commentId, seenCtx);
   block.appendChild(header);
 
   const body = el("div", "comment-body");
@@ -803,6 +1070,9 @@ function buildCommentBlock(comment) {
   inner.innerHTML = renderMarkdown(comment.body);
   body.appendChild(inner);
   block.appendChild(body);
+
+  // Mark this individual comment as seen for next visit
+  seenCtx?.markSeen(commentId);
 
   return block;
 }
