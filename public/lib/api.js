@@ -68,6 +68,50 @@ export async function resolveThread(owner, repo, number, nodeId) {
   return res.json();
 }
 
+// --- Actions / workflow runs ---
+
+export async function fetchActions(owner, repo, number) {
+  const res = await fetch(`/api/pr/${owner}/${repo}/${number}/actions`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to fetch actions");
+  }
+  return res.json();
+}
+
+export async function fetchWorkflowJobs(owner, repo, runId) {
+  const res = await fetch(`/api/repos/${owner}/${repo}/actions/runs/${runId}/jobs`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to fetch jobs");
+  }
+  return res.json();
+}
+
+export async function rerunWorkflow(owner, repo, runId) {
+  const res = await fetch(
+    `/api/repos/${owner}/${repo}/actions/runs/${runId}/rerun`,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to rerun workflow");
+  }
+  return res.json();
+}
+
+export async function rerunFailedJobs(owner, repo, runId) {
+  const res = await fetch(
+    `/api/repos/${owner}/${repo}/actions/runs/${runId}/rerun-failed`,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to rerun failed jobs");
+  }
+  return res.json();
+}
+
 export async function unresolveThread(owner, repo, number, nodeId) {
   const res = await fetch(
     `/api/pr/${owner}/${repo}/${number}/threads/${nodeId}/unresolve`,

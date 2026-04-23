@@ -1,4 +1,5 @@
-import { fetchPR, fetchPulls, fetchRepoUsers } from "./lib/api.js";
+import { fetchPR, fetchPulls, fetchRepoUsers, fetchActions } from "./lib/api.js";
+import { renderActionsPanel } from "./lib/actions-renderer.js";
 import { buildTimeline } from "./lib/timeline.js";
 import { classifyTimeline, groupReviewCommentThreads } from "./lib/classifier.js";
 import { renderDiffPanel } from "./lib/diff-renderer.js";
@@ -392,12 +393,218 @@ async function loadPR(owner, repo, number) {
     document.getElementById("pr-panel").hidden = false;
     showTab("conversation");
     document.title = `#${number} ${data.pr.title} - PR Reviewer`;
+
+    // Fetch Actions data in the background (doesn't block PR view)
+    loadActionsForCurrentPR();
+    startActionsAutoRefresh();
   } catch (err) {
     showError(err.message);
     document.getElementById("index-panel").hidden = false;
   } finally {
     setLoading(false);
   }
+}
+
+// --- Actions tab ---
+
+/**
+ * Adaptive polling for the Actions tab.
+ *
+ * - While ANY workflow run is queued or in_progress → poll every 5s
+ * - Otherwise → poll every 60s so newly-created runs are still picked up
+ * - Background tabs are skipped (resumed on visibility change)
+ * - Between polls, compare against the previous snapshot; when a run
+ *   transitions out of queued/in_progress we flash the card and show a
+ *   toast (+ optional browser notification)
+ */
+const ACTIONS_POLL_FAST = 5000;
+const ACTIONS_POLL_SLOW = 60000;
+let actionsRefreshTimer = null;
+let actionsPollingInFlight = false;
+let prevActionsState = null; // Map<runId, { status, conclusion, name, url }>
+
+async function loadActionsForCurrentPR(opts = {}) {
+  if (!currentPR) return;
+  const panel = document.getElementById("panel-actions");
+  const isInitial = opts.isInitial ?? !prevActionsState;
+  if (isInitial) {
+    panel.innerHTML = '<div class="actions-loading">Loading workflow runs...</div>';
+  } else {
+    setActionsRefreshing(true);
+  }
+  actionsPollingInFlight = true;
+
+  try {
+    const { owner, repo, number } = currentPR;
+    const data = await fetchActions(owner, repo, number);
+
+    // Detect state transitions BEFORE re-rendering so we know which
+    // cards deserve a flash.
+    const justFinished = detectFinishedRuns(prevActionsState, data.workflowRuns || []);
+
+    renderActionsPanel("panel-actions", data, currentPR);
+
+    const externalChecks = (data.checkRuns || []).filter(
+      (c) => !c.app || c.app.slug !== "github-actions"
+    );
+    const count = (data.workflowRuns?.length || 0) + externalChecks.length;
+    document.getElementById("actions-count").textContent = String(count);
+
+    // Flash cards that just finished + show toast / browser notification
+    for (const finished of justFinished) {
+      flashFinishedWorkflow(finished);
+      notifyFinished(finished);
+    }
+
+    // Snapshot current state for the next diff
+    prevActionsState = snapshotRuns(data.workflowRuns || []);
+
+    // Schedule next poll with adaptive cadence
+    scheduleNextActionsPoll(data.workflowRuns || []);
+  } catch (err) {
+    if (isInitial) {
+      panel.innerHTML = `<div class="actions-error">Failed to load actions: ${escapeHtml(err.message)}</div>`;
+    }
+    // On error, retry with the slow interval
+    scheduleNextActionsPoll([]);
+  } finally {
+    actionsPollingInFlight = false;
+    setActionsRefreshing(false);
+  }
+}
+
+function snapshotRuns(runs) {
+  const m = new Map();
+  for (const r of runs) {
+    m.set(r.id, {
+      status: r.status,
+      conclusion: r.conclusion,
+      name: r.name || r.display_title || "Workflow",
+      url: r.html_url,
+    });
+  }
+  return m;
+}
+
+function detectFinishedRuns(prev, currentRuns) {
+  if (!prev) return [];
+  const finished = [];
+  for (const r of currentRuns) {
+    const before = prev.get(r.id);
+    if (!before) continue;
+    const wasActive = before.status === "queued" || before.status === "in_progress" || before.status === "waiting";
+    const isDone = r.status === "completed";
+    if (wasActive && isDone) {
+      finished.push({
+        id: r.id,
+        name: r.name || r.display_title || "Workflow",
+        conclusion: r.conclusion,
+        url: r.html_url,
+      });
+    }
+  }
+  return finished;
+}
+
+function hasActiveRuns(runs) {
+  return runs.some(
+    (r) => r.status === "queued" || r.status === "in_progress" || r.status === "waiting"
+  );
+}
+
+function scheduleNextActionsPoll(runs) {
+  if (actionsRefreshTimer) clearTimeout(actionsRefreshTimer);
+  const delay = hasActiveRuns(runs) ? ACTIONS_POLL_FAST : ACTIONS_POLL_SLOW;
+  actionsRefreshTimer = setTimeout(() => {
+    if (!currentPR) return;
+    if (document.hidden) {
+      // Page is hidden; push the next attempt until it's visible again
+      scheduleNextActionsPoll(runs);
+      return;
+    }
+    loadActionsForCurrentPR({ isInitial: false });
+  }, delay);
+}
+
+function startActionsAutoRefresh() {
+  stopActionsAutoRefresh();
+  // First poll runs via loadActionsForCurrentPR; it schedules follow-ups.
+}
+
+function stopActionsAutoRefresh() {
+  if (actionsRefreshTimer) {
+    clearTimeout(actionsRefreshTimer);
+    actionsRefreshTimer = null;
+  }
+  prevActionsState = null;
+}
+
+function setActionsRefreshing(on) {
+  const panel = document.getElementById("panel-actions");
+  if (!panel) return;
+  panel.classList.toggle("actions-is-refreshing", on);
+}
+
+function flashFinishedWorkflow(finished) {
+  // Cards are grouped by name; find the one with matching title
+  const cards = document.querySelectorAll("#panel-actions .workflow-card");
+  for (const card of cards) {
+    const title = card.querySelector(".workflow-card-title strong")?.textContent;
+    if (title === finished.name) {
+      card.classList.add("workflow-just-finished");
+      setTimeout(() => card.classList.remove("workflow-just-finished"), 3000);
+      break;
+    }
+  }
+}
+
+function notifyFinished({ name, conclusion, url }) {
+  const state = conclusion === "success" ? "succeeded" : conclusion === "failure" ? "failed" : (conclusion || "finished");
+  showToast(`${name} ${state}`, conclusion === "success" ? "success" : "failure", url);
+
+  // Browser notification (best-effort; permission requested on first successful run)
+  if ("Notification" in window) {
+    if (Notification.permission === "granted") {
+      try {
+        const n = new Notification(`${name} ${state}`, {
+          body: `PR #${currentPR?.number} · ${currentPR?.owner}/${currentPR?.repo}`,
+          icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23238636'><path d='M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0Z'/></svg>",
+        });
+        if (url) n.onclick = () => window.open(url, "_blank");
+      } catch {
+        /* some browsers require interaction; ignore */
+      }
+    } else if (Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }
+}
+
+/** Simple stacked toast container */
+function showToast(message, kind = "success", url = null) {
+  let container = document.getElementById("toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${kind}`;
+  const text = document.createElement("span");
+  text.textContent = message;
+  toast.appendChild(text);
+  if (url) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = "View";
+    link.className = "toast-link";
+    toast.appendChild(link);
+  }
+  container.appendChild(toast);
+  setTimeout(() => toast.classList.add("toast-leaving"), 5000);
+  setTimeout(() => toast.remove(), 5500);
 }
 
 // --- Tab switching ---
@@ -676,6 +883,8 @@ function init() {
     document.getElementById("pr-list-controls").hidden = true;
     document.getElementById("pr-list").innerHTML = "";
     currentRepo = null;
+    currentPR = null;
+    stopActionsAutoRefresh();
     document.title = "PR Reviewer";
   });
 
@@ -684,6 +893,26 @@ function init() {
   initThemeToggle();
   initClearDataModal();
   renderRecentRepos();
+
+  // When the browser tab becomes visible again, refresh actions data
+  // immediately if a PR is loaded — otherwise scheduled polls may be
+  // waiting on the slow interval.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && currentPR && !actionsPollingInFlight) {
+      loadActionsForCurrentPR({ isInitial: false });
+    }
+  });
+
+  // After a Re-run button succeeds, the actions-renderer dispatches this
+  // event. Give GitHub a couple seconds to register the rerun, then poll.
+  document.addEventListener("actions:request-refresh", () => {
+    if (!currentPR || actionsPollingInFlight) return;
+    if (actionsRefreshTimer) clearTimeout(actionsRefreshTimer);
+    actionsRefreshTimer = setTimeout(
+      () => loadActionsForCurrentPR({ isInitial: false }),
+      2000
+    );
+  });
 
   // Handle initial hash
   window.addEventListener("hashchange", handleHash);

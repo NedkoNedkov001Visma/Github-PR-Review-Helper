@@ -317,6 +317,101 @@ app.put(
   }
 );
 
+// --- Actions (GitHub Actions workflow runs + check runs) ---
+
+// Fetch workflow runs + check runs for the PR's head commit
+app.get("/api/pr/:owner/:repo/:number/actions", async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const token = getToken();
+
+    // Get the head SHA from the PR
+    const { data: pr } = await ghFetch(
+      `/repos/${owner}/${repo}/pulls/${number}`,
+      token
+    );
+    const sha = pr.head && pr.head.sha;
+    if (!sha) return res.json({ sha: null, workflowRuns: [], checkRuns: [] });
+
+    const [wfRes, crRes] = await Promise.all([
+      ghFetch(
+        `/repos/${owner}/${repo}/actions/runs?head_sha=${sha}&per_page=100`,
+        token
+      ).catch((e) => ({ data: { workflow_runs: [], error: e.message } })),
+      ghFetch(
+        `/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`,
+        token
+      ).catch((e) => ({ data: { check_runs: [], error: e.message } })),
+    ]);
+
+    res.json({
+      sha,
+      workflowRuns: wfRes.data.workflow_runs || [],
+      checkRuns: crRes.data.check_runs || [],
+    });
+  } catch (err) {
+    console.error("Error fetching actions:", err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Fetch the jobs of a single workflow run (used to show per-job detail
+// and enable per-job rerun for failed jobs).
+app.get(
+  "/api/repos/:owner/:repo/actions/runs/:runId/jobs",
+  async (req, res) => {
+    try {
+      const { owner, repo, runId } = req.params;
+      const token = getToken();
+      const { data } = await ghFetch(
+        `/repos/${owner}/${repo}/actions/runs/${runId}/jobs?per_page=100`,
+        token
+      );
+      res.json(data.jobs || []);
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+);
+
+// Re-run an entire workflow run
+app.post(
+  "/api/repos/:owner/:repo/actions/runs/:runId/rerun",
+  async (req, res) => {
+    try {
+      const { owner, repo, runId } = req.params;
+      const token = getToken();
+      await ghFetch(
+        `/repos/${owner}/${repo}/actions/runs/${runId}/rerun`,
+        token,
+        { method: "POST" }
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+);
+
+// Re-run only the failed jobs of a workflow run
+app.post(
+  "/api/repos/:owner/:repo/actions/runs/:runId/rerun-failed",
+  async (req, res) => {
+    try {
+      const { owner, repo, runId } = req.params;
+      const token = getToken();
+      await ghFetch(
+        `/repos/${owner}/${repo}/actions/runs/${runId}/rerun-failed-jobs`,
+        token,
+        { method: "POST" }
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+);
+
 // --- Start ---
 
 app.listen(PORT, () => {
