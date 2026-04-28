@@ -383,19 +383,35 @@ export function renderDiffPanel(containerId, files, reviewComments, threadMap, p
     if (thread.root?.path) filesWithComments.add(thread.root.path);
   }
 
-  // Per-PR persistent state (hide/show, body expand/collapse, folder collapse)
+  // Per-PR persistent state (hide/show, body expand/collapse, folder
+  // collapse, viewed-file shas)
   const state = loadFileState(prInfo);
   const hiddenFiles = new Set(state.hidden);
   const expandedFiles = new Set(state.expanded);
   const collapsedFiles = new Set(state.collapsed);
   const collapsedFolders = new Set(state.collapsedFolders);
+  const viewedShas = { ...state.viewed }; // { filename: sha-when-viewed }
   const save = () =>
     saveFileState(prInfo, {
       hidden: [...hiddenFiles],
       expanded: [...expandedFiles],
       collapsed: [...collapsedFiles],
       collapsedFolders: [...collapsedFolders],
+      viewed: viewedShas,
     });
+
+  // Helpers that classify viewed state against the current file's sha
+  const viewedStatus = (file) => {
+    const seenSha = viewedShas[file.filename];
+    if (!seenSha) return "unviewed";
+    if (seenSha === file.sha) return "viewed";
+    return "changed"; // was viewed but content has changed
+  };
+  const setViewed = (file, isViewed) => {
+    if (isViewed) viewedShas[file.filename] = file.sha;
+    else delete viewedShas[file.filename];
+    save();
+  };
 
   // Two-pane layout: file tree on the left, diff content on the right
   const layout = document.createElement("div");
@@ -422,6 +438,16 @@ export function renderDiffPanel(containerId, files, reviewComments, threadMap, p
   //   2. If user explicitly collapsed → collapsed
   //   3. Otherwise: expanded if file has comments, collapsed otherwise
   const fileSections = new Map();
+  // Called whenever a viewed state toggles — re-syncs tree row styling
+  // so the tree and the diff section stay in lockstep.
+  const onViewedChange = (filename) => {
+    const status = viewedShas[filename]
+      ? viewedShas[filename] === files.find((f) => f.filename === filename)?.sha
+        ? "viewed"
+        : "changed"
+      : "unviewed";
+    updateTreeRowViewed(tree, filename, status);
+  };
   for (const file of files) {
     const section = renderFileSection(
       file,
@@ -429,7 +455,12 @@ export function renderDiffPanel(containerId, files, reviewComments, threadMap, p
       filesWithComments,
       expandedFiles,
       collapsedFiles,
-      save
+      save,
+      viewedStatus(file),
+      (isViewed) => {
+        setViewed(file, isViewed);
+        onViewedChange(file.filename);
+      }
     );
     fileSections.set(file.filename, section);
     if (hiddenFiles.has(file.filename)) section.hidden = true;
@@ -479,7 +510,46 @@ export function renderDiffPanel(containerId, files, reviewComments, threadMap, p
   });
 
   // Build and render the file tree
-  renderFileTree(tree, files, fileSections, hiddenFiles, collapsedFolders, save);
+  renderFileTree(
+    tree,
+    files,
+    fileSections,
+    hiddenFiles,
+    collapsedFolders,
+    save,
+    viewedStatus,
+    (file, isViewed) => {
+      setViewed(file, isViewed);
+      // Reflect the change in the diff section too
+      const section = fileSections.get(file.filename);
+      updateSectionViewed(section, isViewed ? "viewed" : "unviewed");
+    }
+  );
+}
+
+/** Update the tree row's viewed-state class without re-rendering. */
+function updateTreeRowViewed(treeContainer, filename, status) {
+  const row = treeContainer?.querySelector(
+    `.tree-file[data-tree-file="${CSS.escape(filename)}"]`
+  );
+  if (!row) return;
+  row.classList.remove("file-viewed", "file-changed-since-viewed");
+  if (status === "viewed") row.classList.add("file-viewed");
+  else if (status === "changed") row.classList.add("file-changed-since-viewed");
+  // Keep the checkbox state in sync
+  const cb = row.querySelector('input[type="checkbox"].file-viewed-toggle');
+  if (cb) cb.checked = status === "viewed";
+}
+
+/** Update a diff file section's viewed-state class + checkbox. */
+function updateSectionViewed(section, status) {
+  if (!section) return;
+  section.classList.remove("file-viewed", "file-changed-since-viewed");
+  if (status === "viewed") section.classList.add("file-viewed");
+  else if (status === "changed")
+    section.classList.add("file-changed-since-viewed");
+  const cb = section.querySelector('input[type="checkbox"].file-viewed-toggle');
+  if (cb) cb.checked = status === "viewed";
 }
 
 /**
@@ -529,11 +599,16 @@ function renderFileSection(
   filesWithComments,
   expandedFiles,
   collapsedFiles,
-  save
+  save,
+  initialViewedStatus,
+  onViewedToggle
 ) {
   const section = document.createElement("div");
   section.className = "diff-file";
   section.dataset.filename = file.filename;
+  if (initialViewedStatus === "viewed") section.classList.add("file-viewed");
+  else if (initialViewedStatus === "changed")
+    section.classList.add("file-changed-since-viewed");
 
   const header = document.createElement("div");
   header.className = "diff-file-header";
@@ -545,6 +620,12 @@ function renderFileSection(
   const filename = document.createElement("span");
   filename.className = "diff-filename";
   filename.textContent = file.filename;
+
+  // "Changed since viewed" pill — only shown when applicable
+  const changedPill = document.createElement("span");
+  changedPill.className = "file-changed-pill";
+  changedPill.textContent = "Changed since viewed";
+  changedPill.hidden = initialViewedStatus !== "changed";
 
   const stats = document.createElement("span");
   stats.className = "diff-stats";
@@ -561,9 +642,31 @@ function renderFileSection(
     stats.appendChild(delSpan);
   }
 
+  // Viewed checkbox on the far right of the header
+  const viewedLabel = document.createElement("label");
+  viewedLabel.className = "file-viewed-label";
+  viewedLabel.title = "Mark this file as viewed (tracked locally)";
+  const viewedCheckbox = document.createElement("input");
+  viewedCheckbox.type = "checkbox";
+  viewedCheckbox.className = "file-viewed-toggle";
+  viewedCheckbox.checked = initialViewedStatus === "viewed";
+  viewedLabel.appendChild(viewedCheckbox);
+  viewedLabel.appendChild(document.createTextNode(" Viewed"));
+  // Clicks on the checkbox/label shouldn't expand/collapse the diff body
+  viewedLabel.addEventListener("click", (e) => e.stopPropagation());
+  viewedCheckbox.addEventListener("change", () => {
+    const now = viewedCheckbox.checked;
+    section.classList.remove("file-viewed", "file-changed-since-viewed");
+    if (now) section.classList.add("file-viewed");
+    changedPill.hidden = true;
+    onViewedToggle?.(now);
+  });
+
   header.appendChild(badge);
   header.appendChild(filename);
+  header.appendChild(changedPill);
   header.appendChild(stats);
+  header.appendChild(viewedLabel);
 
   const body = document.createElement("div");
   body.className = "diff-file-body";
@@ -651,7 +754,9 @@ function renderFileTree(
   fileSections,
   hiddenFiles,
   collapsedFolders,
-  save
+  save,
+  viewedStatus,
+  onViewedToggle
 ) {
   container.innerHTML = "";
 
@@ -808,6 +913,28 @@ function renderFileTree(
     li.dataset.treeFile = file.filename;
     if (hiddenFiles.has(file.filename)) li.classList.add("file-hidden");
 
+    const vStatus = viewedStatus ? viewedStatus(file) : "unviewed";
+    if (vStatus === "viewed") li.classList.add("file-viewed");
+    else if (vStatus === "changed")
+      li.classList.add("file-changed-since-viewed");
+
+    // Viewed checkbox, on the far left so it's easy to scan down the column
+    const viewedCb = document.createElement("input");
+    viewedCb.type = "checkbox";
+    viewedCb.className = "file-viewed-toggle";
+    viewedCb.title = "Mark this file as viewed";
+    viewedCb.checked = vStatus === "viewed";
+    viewedCb.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+    viewedCb.addEventListener("change", () => {
+      const now = viewedCb.checked;
+      li.classList.remove("file-viewed", "file-changed-since-viewed");
+      if (now) li.classList.add("file-viewed");
+      onViewedToggle?.(file, now);
+    });
+    li.appendChild(viewedCb);
+
     const eye = document.createElement("button");
     eye.type = "button";
     eye.className = "file-visibility";
@@ -908,6 +1035,7 @@ function loadFileState(prInfo) {
     expanded: [],
     collapsed: [],
     collapsedFolders: [],
+    viewed: {},
   };
   if (!key) return empty;
   try {
@@ -921,6 +1049,10 @@ function loadFileState(prInfo) {
         collapsedFolders: Array.isArray(parsed.collapsedFolders)
           ? parsed.collapsedFolders
           : [],
+        viewed:
+          parsed.viewed && typeof parsed.viewed === "object"
+            ? parsed.viewed
+            : {},
       };
     }
     // Legacy migration: read old hidden-only key, if present

@@ -33,6 +33,8 @@
   --hover-hint: #f0f6ff;
   --label-yellow-bg: #fff8c5;
   --label-yellow-fg: #9a6700;
+  --new-tint: rgba(9, 105, 218, 0.05);
+  --new-tint-strong: rgba(9, 105, 218, 0.09);
 
   --avatar: 40px;
   --avatar-sm: 20px;
@@ -83,6 +85,8 @@
   --hover-hint: rgba(88,166,255,0.1);
   --label-yellow-bg: rgba(210,153,34,0.2);
   --label-yellow-fg: #d29922;
+  --new-tint: rgba(88, 166, 255, 0.07);
+  --new-tint-strong: rgba(88, 166, 255, 0.12);
 
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
   --shadow-md: 0 3px 12px rgba(0,0,0,0.4);
@@ -618,6 +622,24 @@ header {
 }
 .comment-header .author { font-weight: 600; color: var(--fg); }
 
+/* Subtle blue tint on items containing a "New" badge so unseen activity
+   is visible at a glance without reading the label. */
+#panel-conversation > .timeline-item:has(.new-comment-badge),
+#panel-conversation > .standalone-thread:has(.new-comment-badge),
+#panel-ai-comments > .timeline-item:has(.new-comment-badge),
+#panel-ai-comments > .standalone-thread:has(.new-comment-badge) {
+  background: var(--new-tint);
+}
+/* Slightly stronger tint on the inner thread container that actually
+   holds a new reply, so it stands out within a busy review. */
+.review-thread-container:has(> .thread-comment > .comment-header > .new-comment-badge) {
+  background: var(--new-tint);
+}
+
+/* Same blue tint for files changed since the user last viewed them. */
+.tree-file.file-changed-since-viewed { background: var(--new-tint); }
+.diff-file.file-changed-since-viewed > .diff-file-header { background: var(--new-tint-strong); }
+
 /* "New" badge for unseen comments since last visit */
 .new-comment-badge {
   display: inline-flex;
@@ -962,6 +984,36 @@ header {
 .tree-file.file-hidden { opacity: 0.5; }
 .tree-file.file-hidden .tree-file-name { text-decoration: line-through; }
 
+/* Viewed state in the tree — dim the row, muted name */
+.tree-file.file-viewed .tree-file-name { color: var(--fg-muted); }
+.tree-file.file-viewed .tree-file-status { opacity: 0.6; }
+.tree-file.file-viewed:not(:hover) { background: rgba(0, 0, 0, 0.015); }
+[data-theme="dark"] .tree-file.file-viewed:not(:hover) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Changed-since-viewed — warn with a soft yellow dot on the left */
+.tree-file.file-changed-since-viewed::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 70%;
+  background: var(--label-yellow-fg);
+  border-radius: 0 2px 2px 0;
+}
+.tree-file { position: relative; }
+
+/* Tree-row viewed checkbox — compact, subtle */
+.tree-file .file-viewed-toggle {
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--open);
+}
+
 .file-visibility {
   display: inline-flex;
   align-items: center;
@@ -1032,6 +1084,56 @@ header {
 
 /* === File diff (Files Changed tab) === */
 .diff-file { margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg); }
+
+/* Viewed / changed-since-viewed states on the diff section */
+.diff-file.file-viewed .diff-file-header { background: var(--bg-subtle); opacity: 0.75; }
+.diff-file.file-viewed .diff-filename { color: var(--fg-muted); }
+.diff-file.file-changed-since-viewed { border-left: 3px solid var(--label-yellow-fg); }
+
+/* "Changed since viewed" pill in the file header */
+.file-changed-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-radius: 20px;
+  background: var(--label-yellow-bg);
+  color: var(--label-yellow-fg);
+  border: 1px solid var(--label-yellow-fg);
+  white-space: nowrap;
+  margin-left: 8px;
+}
+
+/* "Viewed" label + checkbox on the far right of the diff file header */
+.file-viewed-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+.file-viewed-label:hover { background: var(--bg-subtle); color: var(--fg); }
+.file-viewed-label input {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--open);
+}
+.diff-file.file-viewed .file-viewed-label {
+  color: var(--open);
+  border-color: var(--open);
+  background: var(--open-bg);
+}
 .diff-file-header {
   padding: 10px 16px;
   background: var(--bg-subtle);

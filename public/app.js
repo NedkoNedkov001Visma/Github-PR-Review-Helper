@@ -342,11 +342,12 @@ function renderPRList(pulls, owner, repo) {
 // --- PR loading ---
 
 async function navigateToPR(owner, repo, number) {
+  // Setting the hash triggers the hashchange listener, which will call
+  // loadPR via handleHash. Avoid double-loading by letting handleHash own it.
   location.hash = `${owner}/${repo}/${number}`;
-  await loadPR(owner, repo, number);
 }
 
-async function loadPR(owner, repo, number) {
+async function loadPR(owner, repo, number, initialTab = null) {
   currentPR = { owner, repo, number };
   // Reset per-PR memoization so a fresh render reads current localStorage.
   resetCommentStateCaches();
@@ -389,9 +390,14 @@ async function loadPR(owner, repo, number) {
       data.files.length
     );
 
-    // Show PR panel with conversation tab active
+    // Show PR panel; restore the tab from the URL if provided, otherwise
+    // default to Conversation.
     document.getElementById("pr-panel").hidden = false;
-    showTab("conversation");
+    const tabToShow = KNOWN_TABS.includes(initialTab) ? initialTab : "conversation";
+    showTab(tabToShow);
+    // Sync the hash so the URL always reflects the active tab — even on
+    // the initial Conversation default.
+    history.replaceState(null, "", `#${owner}/${repo}/${number}/${tabToShow}`);
     document.title = `#${number} ${data.pr.title} - PR Reviewer`;
 
     // Fetch Actions data in the background (doesn't block PR view)
@@ -609,11 +615,20 @@ function showToast(message, kind = "success", url = null) {
 
 // --- Tab switching ---
 
+const KNOWN_TABS = ["conversation", "ai-comments", "files-changed", "actions"];
+
 function initTabs() {
   document.getElementById("tab-nav").addEventListener("click", (e) => {
     const btn = e.target.closest("[role='tab']");
     if (!btn) return;
-    showTab(btn.dataset.tab);
+    const tab = btn.dataset.tab;
+    showTab(tab);
+    // Reflect the active tab in the URL hash so reload / bookmark restores
+    // it. Use replaceState so tab switches don't pollute history.
+    if (currentPR) {
+      const base = `#${currentPR.owner}/${currentPR.repo}/${currentPR.number}`;
+      history.replaceState(null, "", `${base}/${tab}`);
+    }
   });
 }
 
@@ -638,10 +653,23 @@ function handleHash() {
     loadRepoPRs(repoStr);
     return;
   }
-  // PR hash: owner/repo/number
-  const match = hash.match(/^([^/]+)\/([^/]+)\/(\d+)$/);
+  // PR hash with optional tab: owner/repo/number or owner/repo/number/tab
+  const match = hash.match(/^([^/]+)\/([^/]+)\/(\d+)(?:\/([\w-]+))?$/);
   if (match) {
-    loadPR(match[1], match[2], match[3]);
+    const [, owner, repo, number, tab] = match;
+    const wantedTab = KNOWN_TABS.includes(tab) ? tab : null;
+    // If the PR is already loaded and we're only switching tabs, don't
+    // reload PR data — just switch the tab.
+    if (
+      currentPR &&
+      currentPR.owner === owner &&
+      currentPR.repo === repo &&
+      currentPR.number === number
+    ) {
+      if (wantedTab) showTab(wantedTab);
+      return;
+    }
+    loadPR(owner, repo, number, wantedTab);
   }
 }
 
