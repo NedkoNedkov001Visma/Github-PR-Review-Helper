@@ -257,9 +257,13 @@ export function showTab(tabName) {
 function el(tag, classNames, textContent) {
   const node = document.createElement(tag);
   if (classNames) {
-    (Array.isArray(classNames) ? classNames : [classNames]).forEach((c) =>
-      node.classList.add(c)
-    );
+    const list = Array.isArray(classNames) ? classNames : [classNames];
+    for (const entry of list) {
+      // Allow space-separated class strings like "foo bar baz"
+      for (const c of String(entry).split(/\s+/).filter(Boolean)) {
+        node.classList.add(c);
+      }
+    }
   }
   if (textContent !== undefined) node.textContent = textContent;
   return node;
@@ -774,19 +778,54 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
     container.dataset.rootCommentId = String(thread.root.id);
   }
 
-  // File path badge (+ line number)
+  // ── Header row: collapse toggle, file path, optional "Resolved" pill
+  const summary = el("div", "thread-summary");
+
+  // Collapse chevron — clicking expands/collapses the body. Initial
+  // state mirrors `thread.isResolved` (resolved threads start collapsed).
+  const collapseBtn = document.createElement("button");
+  collapseBtn.type = "button";
+  collapseBtn.className = "thread-collapse-toggle";
+  collapseBtn.setAttribute("aria-label", "Toggle thread");
+  collapseBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.78 6.22a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L3.22 7.28a.749.749 0 0 1 1.06-1.06L8 9.94l3.72-3.72a.749.749 0 0 1 1.06 0Z"></path></svg>`;
+  summary.appendChild(collapseBtn);
+
+  // File path badge (+ line number) — sits in the summary row.
+  // Clicking it toggles collapse along with the rest of the summary;
+  // the file diff preview is still reachable by clicking the diff
+  // hunk inside the body.
   if (thread.root && thread.root.path) {
     const pathBadge = el("span", "file-path-badge");
     const pathText = thread.root.path;
     const lineNo = thread.root.line ?? thread.root.original_line;
     pathBadge.textContent = lineNo ? `${pathText}:${lineNo}` : pathText;
-
-    if (canPreview) {
-      pathBadge.classList.add("clickable");
-      pathBadge.title = "Preview this file's diff";
-    }
-    container.appendChild(pathBadge);
+    pathBadge.title = "Click to expand/collapse this thread";
+    summary.appendChild(pathBadge);
   }
+
+  // "Resolved" / "Outdated" status pills
+  if (thread.isResolved) {
+    summary.appendChild(el("span", "thread-status-pill thread-status-resolved", "Resolved"));
+  }
+  if (thread.isOutdated) {
+    summary.appendChild(el("span", "thread-status-pill thread-status-outdated", "Outdated"));
+  }
+  // Reply count summary — shown when collapsed so the user can see
+  // how many comments live in the thread without expanding it.
+  const totalReplies = (thread.replies?.length || 0) + 1;
+  if (totalReplies > 1) {
+    summary.appendChild(
+      el(
+        "span",
+        "thread-reply-count",
+        `${totalReplies} comments`
+      )
+    );
+  }
+  container.appendChild(summary);
+
+  // ── Body: hunk + comments + reply form + resolve button ────────
+  const body = el("div", "thread-body");
 
   // Diff hunk — rendered as a table with old/new line numbers
   if (thread.root && thread.root.diff_hunk) {
@@ -795,12 +834,12 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
       hunkTable.classList.add("clickable");
       hunkTable.title = "Preview this file's diff";
     }
-    container.appendChild(hunkTable);
+    body.appendChild(hunkTable);
   }
 
   // Root comment
   if (thread.root) {
-    container.appendChild(buildCommentBlock(thread.root, seenCtx, prInfo));
+    body.appendChild(buildCommentBlock(thread.root, seenCtx, prInfo));
   }
 
   // Replies
@@ -808,7 +847,7 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
     for (const reply of thread.replies) {
       const replyEl = buildCommentBlock(reply, seenCtx, prInfo);
       replyEl.classList.add("thread-reply");
-      container.appendChild(replyEl);
+      body.appendChild(replyEl);
     }
   }
 
@@ -821,8 +860,8 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
 
   const replyBtn = el("button", "btn-reply", "Reply");
   replyBtn.addEventListener("click", async () => {
-    const body = textarea.value.trim();
-    if (!body) return;
+    const text = textarea.value.trim();
+    if (!text) return;
     replyBtn.disabled = true;
     replyBtn.textContent = "Sending\u2026";
     try {
@@ -831,12 +870,12 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
         prInfo.repo,
         prInfo.number,
         thread.root.id,
-        body
+        text
       );
       // Append new reply into the thread
       const newEl = buildCommentBlock(newComment, seenCtx, prInfo);
       newEl.classList.add("thread-reply");
-      container.insertBefore(newEl, replyForm);
+      body.insertBefore(newEl, replyForm);
       textarea.value = "";
     } catch (err) {
       console.error("Reply failed:", err);
@@ -847,19 +886,20 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
     }
   });
   replyForm.appendChild(replyBtn);
-  container.appendChild(replyForm);
+  body.appendChild(replyForm);
 
   // Resolve / Unresolve button — needs the GraphQL THREAD node id
   // (a `PullRequestReviewThread` ID, not a comment node id). The
   // classifier attaches this from the GraphQL `reviewThreads` payload.
+  let resolved = !!thread.isResolved;
+  let resolvedPill = summary.querySelector(".thread-status-resolved");
+
   if (thread.threadNodeId) {
     const resolveBtn = el(
       "button",
       "btn-resolve",
-      thread.isResolved ? "Unresolve" : "Resolve"
+      resolved ? "Unresolve" : "Resolve"
     );
-    let resolved = !!thread.isResolved;
-    if (resolved) container.classList.add("thread-resolved");
 
     resolveBtn.addEventListener("click", async () => {
       resolveBtn.disabled = true;
@@ -870,12 +910,26 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
           thread.isResolved = false;
           resolveBtn.textContent = "Resolve";
           container.classList.remove("thread-resolved");
+          if (resolvedPill) {
+            resolvedPill.remove();
+            resolvedPill = null;
+          }
+          // Auto-expand on unresolve so the comments are visible
+          setCollapsed(false);
         } else {
           await resolveThread(prInfo.owner, prInfo.repo, prInfo.number, thread.threadNodeId);
           resolved = true;
           thread.isResolved = true;
           resolveBtn.textContent = "Unresolve";
           container.classList.add("thread-resolved");
+          if (!resolvedPill) {
+            resolvedPill = el("span", "thread-status-pill thread-status-resolved", "Resolved");
+            // Insert after the file path badge / before any reply count
+            const replyCount = summary.querySelector(".thread-reply-count");
+            summary.insertBefore(resolvedPill, replyCount || null);
+          }
+          // Auto-collapse on resolve to match the default
+          setCollapsed(true);
         }
       } catch (err) {
         console.error("Resolve/unresolve failed:", err);
@@ -884,8 +938,31 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
         resolveBtn.disabled = false;
       }
     });
-    container.appendChild(resolveBtn);
+    body.appendChild(resolveBtn);
   }
+
+  container.appendChild(body);
+
+  // ── Collapse mechanics ─────────────────────────────────────────
+  const setCollapsed = (collapsed) => {
+    body.hidden = collapsed;
+    container.classList.toggle("is-collapsed", collapsed);
+    collapseBtn.setAttribute("aria-expanded", String(!collapsed));
+  };
+  // Resolved → start collapsed
+  setCollapsed(resolved);
+  if (resolved) container.classList.add("thread-resolved");
+
+  collapseBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setCollapsed(!body.hidden ? true : false);
+  });
+  // Clicking anywhere on the summary toggles collapse. The chevron
+  // has its own handler (with stopPropagation) so we don't double-fire.
+  summary.addEventListener("click", (e) => {
+    if (e.target.closest(".thread-collapse-toggle")) return; // already handled
+    setCollapsed(!body.hidden ? true : false);
+  });
 
   return container;
 }

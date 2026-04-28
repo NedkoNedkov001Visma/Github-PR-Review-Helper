@@ -1356,6 +1356,90 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
   border-radius: var(--radius);
   overflow: hidden;
 }
+/* Resolved threads — subtle de-emphasis on the chrome */
+.review-thread-container.thread-resolved {
+  border-color: var(--border-muted, var(--border));
+  opacity: 0.92;
+}
+.review-thread-container.thread-resolved.is-collapsed { opacity: 0.85; }
+.review-thread-container.thread-resolved.is-collapsed:hover { opacity: 1; }
+
+/* Summary row — collapse chevron + file path + status pills */
+.thread-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 4px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.review-thread-container.is-collapsed .thread-summary { border-bottom: none; }
+.thread-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: background var(--transition);
+}
+.thread-collapse-toggle:hover { background: var(--hover-hint); color: var(--fg); }
+.thread-collapse-toggle svg {
+  display: block;
+  transition: transform var(--transition);
+}
+/* Chevron points down when expanded, right when collapsed */
+.review-thread-container.is-collapsed .thread-collapse-toggle svg {
+  transform: rotate(-90deg);
+}
+.thread-summary .file-path-badge {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+  background: transparent;
+  padding: 6px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.thread-status-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.thread-status-resolved {
+  background: var(--open-bg);
+  color: var(--open);
+}
+.thread-status-outdated {
+  background: var(--bg-inset, var(--bg-subtle));
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+.thread-reply-count {
+  font-size: 12px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+/* When the body is hidden, drop the rounded bottom corners on the
+   summary so the container doesn't have an awkward double-rounded look. */
+.review-thread-container.is-collapsed { border-radius: var(--radius); }
+
 .file-path-badge {
   display: block;
   padding: 6px 12px;
