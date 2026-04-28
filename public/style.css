@@ -524,6 +524,17 @@ header {
   padding: 20px 24px;
   margin-bottom: 16px;
   box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+/* Make the breadcrumb and the title each occupy their own row so the
+   inline metadata + action buttons can flow on the row(s) below them. */
+#pr-header > .pr-breadcrumb,
+#pr-header > .pr-title {
+  flex-basis: 100%;
+  margin-bottom: 0;
 }
 .pr-breadcrumb {
   font-size: 13px;
@@ -603,6 +614,376 @@ header {
 .pr-stats { font-size: 13px; margin-left: 8px; }
 .stat-additions { color: var(--open); font-weight: 600; }
 .stat-deletions { color: var(--closed); font-weight: 600; }
+
+/* Review status badge — Approved / Changes requested / Review required */
+.review-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+  margin-left: 8px;
+  border: 1px solid transparent;
+}
+.review-state-badge .icon-inline {
+  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  /* Flex `align-items: center` lines up our icon's box-center with the
+     text's line-box center, but glyphs sit slightly below line-box center
+     (ascent > descent). Nudge the icon down a couple of pixels so it
+     visually centers against the letters. */
+  transform: translateY(2px);
+}
+.review-state-badge .icon-inline svg { display: block; }
+.review-state-badge .icon-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 6px;
+}
+.review-approved {
+  background: var(--open-bg);
+  color: var(--open);
+  border-color: color-mix(in srgb, var(--open) 30%, transparent);
+}
+.review-changes {
+  background: var(--closed-bg);
+  color: var(--closed);
+  border-color: color-mix(in srgb, var(--closed) 30%, transparent);
+}
+.review-pending {
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+
+/* Approve / Merge action buttons sit on the right edge of the PR header */
+.pr-header-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.pr-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.pr-action-btn:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  border-color: var(--fg-muted);
+}
+.pr-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.pr-action-btn .icon-inline { line-height: 0; display: inline-flex; align-items: center; }
+.pr-action-btn .icon-inline svg { display: block; }
+.pr-action-approve:not(:disabled) {
+  background: var(--open);
+  border-color: var(--open);
+  color: #fff;
+}
+.pr-action-approve:not(:disabled):hover {
+  background: color-mix(in srgb, var(--open) 88%, black);
+  border-color: color-mix(in srgb, var(--open) 88%, black);
+}
+.pr-action-merge:not(:disabled) {
+  background: var(--merged);
+  border-color: var(--merged);
+  color: #fff;
+}
+.pr-action-merge:not(:disabled):hover {
+  background: color-mix(in srgb, var(--merged) 88%, black);
+  border-color: color-mix(in srgb, var(--merged) 88%, black);
+}
+
+/* === Commits panel === */
+#panel-commits .commits-empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+.commits-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 0 4px;
+}
+.commits-count {
+  font-size: 13px;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.commits-sort {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.commits-sort-label { white-space: nowrap; }
+.commits-sort-dir {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.commits-sort-dir:hover { background: var(--bg-subtle); border-color: var(--fg-muted); }
+.commits-sort-dir svg { display: block; }
+.commits-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.commits-group-label {
+  padding: 10px 16px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.commits-group-label + .commit-item { border-top: none; }
+.commit-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  transition: background var(--transition);
+}
+.commit-item:hover { background: var(--bg-subtle); }
+.commit-avatar {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--bg-subtle);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.commit-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.commit-avatar-fallback {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg-muted);
+}
+.commit-main { flex: 1; min-width: 0; }
+.commit-subject-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.commit-subject {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+a.commit-subject {
+  text-decoration: none;
+  cursor: pointer;
+  transition: color var(--transition);
+}
+a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
+.commit-body-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.commit-body-toggle:hover { background: var(--bg-subtle); color: var(--fg); }
+.commit-body-toggle.is-open svg { transform: rotate(180deg); }
+.commit-body-toggle svg { transition: transform var(--transition); }
+.commit-body {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: var(--fg);
+}
+.commit-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.commit-author-link {
+  color: var(--fg);
+  font-weight: 500;
+  text-decoration: none;
+}
+.commit-author-link:hover { color: var(--fg-accent); text-decoration: underline; }
+.commit-author-name { color: var(--fg); font-weight: 500; }
+.commit-time { white-space: nowrap; }
+.commit-sha {
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px 8px;
+  text-decoration: none;
+  transition: all var(--transition);
+}
+.commit-sha:hover { color: var(--fg-accent); border-color: var(--fg-accent); }
+
+/* Auto-linked commit SHAs inside comment / review markdown */
+.commit-mention {
+  text-decoration: none;
+  color: var(--fg-accent);
+}
+.commit-mention code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: inherit;
+  transition: border-color var(--transition);
+}
+.commit-mention:hover code { border-color: var(--fg-accent); }
+
+/* === Commit detail view === */
+#commit-header {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.commit-detail-title {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  line-height: 1.3;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+.commit-detail-body {
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: var(--fg);
+}
+.commit-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin-top: 8px;
+}
+.commit-detail-meta .avatar-small {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+}
+.commit-detail-author {
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: none;
+}
+.commit-detail-author:hover { color: var(--fg-accent); text-decoration: underline; }
+.commit-detail-sha-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.commit-detail-sha {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px 8px;
+  color: var(--fg);
+  word-break: break-all;
+}
+.commit-detail-parents { display: inline-flex; align-items: center; gap: 4px; }
+.commit-detail-external {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+  margin-left: auto;
+  transition: color var(--transition);
+}
+.commit-detail-external:hover { color: var(--fg-accent); }
+.commit-detail-stats {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
 
 /* === Badges === */
 .badge {
@@ -1900,6 +2281,111 @@ header {
   width: calc(100% - 32px);
   max-height: calc(100vh - 32px);
   overflow-y: auto;
+}
+/* Used by the commit-preview modal — file diffs need more room than
+   the default modal but shouldn't fill the entire viewport. */
+.modal-content-wide {
+  max-width: 1100px;
+  width: calc(100% - 32px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  /* Body is the only scroll surface — the modal-content itself doesn't scroll. */
+  overflow: hidden;
+}
+.modal-content-wide #commit-preview-body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  margin-top: 4px;
+}
+/* File preview body is a flex column so the file-preview-header stays
+   pinned and only the diff table scrolls. */
+.modal-content-wide #file-preview-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.modal-content-wide #file-preview-body .file-preview {
+  flex: 1;
+  min-height: 0;
+}
+/* Inside the modal, the commit-detail header card is just chrome; trim
+   the outer card styling so the modal frames it. */
+.modal-content-wide #commit-header {
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  margin-bottom: 12px;
+  padding: 16px 18px;
+}
+.modal-content-wide #commit-header .commit-detail-title { font-size: 18px; }
+.modal-loading {
+  padding: 32px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+.modal-error {
+  padding: 16px;
+  color: var(--closed);
+  background: var(--closed-bg);
+  border-radius: var(--radius);
+}
+
+/* Compact one-file diff used inside the file-preview modal */
+.file-preview { display: flex; flex-direction: column; min-height: 0; }
+.file-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 13px;
+  flex-wrap: wrap;
+  flex-shrink: 0; /* keep the file header pinned above the scroll area */
+}
+.file-preview-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.file-preview-scroll > table {
+  border: none;
+  border-radius: 0;
+  margin: 0;
+}
+.file-preview-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  word-break: break-all;
+}
+.file-preview-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 12px;
+}
+.file-preview-empty {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-style: italic;
+  text-align: center;
 }
 .modal-header {
   display: flex;

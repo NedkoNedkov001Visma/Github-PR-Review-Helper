@@ -110,19 +110,56 @@ async function ghGraphQL(query, variables, token) {
 
 // --- Read endpoints ---
 
+// Authenticated GitHub user — used by the UI to decide whether to show
+// the Approve button (only PRs the current user is a reviewer on).
+let cachedCurrentUser = null;
+app.get("/api/user", async (req, res) => {
+  try {
+    if (cachedCurrentUser) {
+      return res.json(cachedCurrentUser);
+    }
+    const token = getToken();
+    const { data } = await ghFetch("/user", token);
+    cachedCurrentUser = {
+      login: data.login,
+      id: data.id,
+      avatar_url: data.avatar_url,
+    };
+    res.json(cachedCurrentUser);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Single commit detail (metadata + files + patch).
+app.get("/api/repos/:owner/:repo/commits/:sha", async (req, res) => {
+  try {
+    const { owner, repo, sha } = req.params;
+    const token = getToken();
+    const { data } = await ghFetch(
+      `/repos/${owner}/${repo}/commits/${sha}`,
+      token
+    );
+    res.json(data);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 app.get("/api/pr/:owner/:repo/:number", async (req, res) => {
   try {
     const { owner, repo, number } = req.params;
     const token = getToken();
     const base = `/repos/${owner}/${repo}`;
 
-    const [prRes, issueComments, reviews, reviewComments, files] =
+    const [prRes, issueComments, reviews, reviewComments, files, commits] =
       await Promise.all([
         ghFetch(`${base}/pulls/${number}`, token),
         ghFetchAll(`${base}/issues/${number}/comments`, token),
         ghFetchAll(`${base}/pulls/${number}/reviews`, token),
         ghFetchAll(`${base}/pulls/${number}/comments`, token),
         ghFetchAll(`${base}/pulls/${number}/files`, token),
+        ghFetchAll(`${base}/pulls/${number}/commits`, token),
       ]);
 
     res.json({
@@ -131,6 +168,7 @@ app.get("/api/pr/:owner/:repo/:number", async (req, res) => {
       reviews,
       reviewComments,
       files,
+      commits,
     });
   } catch (err) {
     console.error("Error fetching PR:", err.message);
@@ -358,6 +396,55 @@ app.put(
     }
   }
 );
+
+// Approve a PR — submits an APPROVE review on behalf of the current user.
+// Optional body: { body: "review comment" }
+app.post("/api/pr/:owner/:repo/:number/approve", async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const token = getToken();
+    const payload = { event: "APPROVE" };
+    if (req.body && typeof req.body.body === "string" && req.body.body.trim()) {
+      payload.body = req.body.body;
+    }
+    const { data } = await ghFetch(
+      `/repos/${owner}/${repo}/pulls/${number}/reviews`,
+      token,
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+    res.json(data);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Merge a PR. Body: { merge_method?: "merge" | "squash" | "rebase",
+//                     commit_title?, commit_message? }
+app.put("/api/pr/:owner/:repo/:number/merge", async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const token = getToken();
+    const payload = {};
+    const allowedMethods = new Set(["merge", "squash", "rebase"]);
+    if (req.body && allowedMethods.has(req.body.merge_method)) {
+      payload.merge_method = req.body.merge_method;
+    }
+    if (req.body && typeof req.body.commit_title === "string") {
+      payload.commit_title = req.body.commit_title;
+    }
+    if (req.body && typeof req.body.commit_message === "string") {
+      payload.commit_message = req.body.commit_message;
+    }
+    const { data } = await ghFetch(
+      `/repos/${owner}/${repo}/pulls/${number}/merge`,
+      token,
+      { method: "PUT", body: JSON.stringify(payload) }
+    );
+    res.json(data);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
 
 // --- Actions (GitHub Actions workflow runs + check runs) ---
 

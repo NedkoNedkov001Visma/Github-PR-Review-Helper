@@ -20,7 +20,14 @@ const SAFE_TAG_RE = new RegExp(
   `&lt;(/?(?:${SAFE_TAGS.join("|")}))(\\s[^&]*?)?&gt;`, "gi"
 );
 
-export function renderMarkdown(text) {
+/**
+ * @param {string} text
+ * @param {object} [opts]
+ * @param {{owner: string, repo: string}} [opts.repoCtx]
+ *   Used to auto-link bare commit SHAs (e.g. "cbf28e4") to
+ *   https://github.com/{owner}/{repo}/commit/{sha}.
+ */
+export function renderMarkdown(text, opts = {}) {
   if (!text) return "";
 
   // HTML-escape to prevent XSS
@@ -102,6 +109,24 @@ export function renderMarkdown(text) {
     /\[([^\]]+)\]\(([^)]+)\)/g,
     '<a href="$2" target="_blank">$1</a>'
   );
+
+  // Auto-link bare commit SHAs (7-40 hex chars). Skip text already inside
+  // an <a>...</a> we just produced. Also skip <img> attributes by checking
+  // we're not inside any tag (the regex rejects matches preceded by `=` or
+  // inside an `<a ... >...</a>` block via the alternation).
+  if (opts.repoCtx && opts.repoCtx.owner && opts.repoCtx.repo) {
+    const { owner, repo } = opts.repoCtx;
+    src = src.replace(
+      /(<a\s[^>]*>[\s\S]*?<\/a>)|(<[^>]+>)|\b([0-9a-f]{7,40})\b/g,
+      (match, anchorBlock, otherTag, sha) => {
+        if (anchorBlock) return anchorBlock; // leave existing links untouched
+        if (otherTag) return otherTag; // leave other tag attributes alone
+        // Open the commit inside this app instead of github.com.
+        const short = sha.slice(0, 7);
+        return `<a href="#${owner}/${repo}/commit/${sha}" class="commit-mention" title="Open commit ${sha} in PR Reviewer"><code>${short}</code></a>`;
+      }
+    );
+  }
 
   // Bold (before italic)
   src = src.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
@@ -244,10 +269,66 @@ function el(tag, classNames, textContent) {
 // PR Header
 // ---------------------------------------------------------------------------
 
-export function renderPRHeader(pr, containerId = "pr-header") {
+/**
+ * Compute the latest review state per reviewer and the overall approval
+ * status. Returns { approvedBy, changesRequestedBy, isApproved,
+ * hasChangesRequested, status }.
+ *
+ * `status` is one of: "approved", "changes_requested", "review_required",
+ * "no_reviews".
+ */
+export function computeApprovalState(reviews = [], prAuthorLogin = null) {
+  // Latest non-COMMENTED review per reviewer (PENDING reviews are drafts —
+  // ignore them). COMMENTED reviews don't change approval state, so we
+  // skip them when picking the "latest decision".
+  const latestByReviewer = new Map();
+  for (const r of reviews) {
+    if (!r || !r.user || !r.user.login) continue;
+    const login = r.user.login;
+    // Skip the PR author's own self-reviews — GitHub doesn't count them.
+    if (prAuthorLogin && login === prAuthorLogin) continue;
+    if (r.state === "PENDING" || r.state === "COMMENTED") continue;
+    const ts = r.submitted_at || r.created_at;
+    const prev = latestByReviewer.get(login);
+    if (!prev || new Date(ts) > new Date(prev.submitted_at || prev.created_at)) {
+      latestByReviewer.set(login, r);
+    }
+  }
+  const approvedBy = [];
+  const changesRequestedBy = [];
+  for (const [login, r] of latestByReviewer) {
+    if (r.state === "APPROVED") approvedBy.push(login);
+    else if (r.state === "CHANGES_REQUESTED") changesRequestedBy.push(login);
+  }
+  const hasChangesRequested = changesRequestedBy.length > 0;
+  const isApproved = approvedBy.length > 0 && !hasChangesRequested;
+  let status;
+  if (hasChangesRequested) status = "changes_requested";
+  else if (isApproved) status = "approved";
+  else if (latestByReviewer.size === 0 && reviews.length === 0)
+    status = "no_reviews";
+  else status = "review_required";
+
+  return { approvedBy, changesRequestedBy, isApproved, hasChangesRequested, status };
+}
+
+/**
+ * @param {object} pr        The PR object from the API.
+ * @param {string} containerId
+ * @param {object} [opts]
+ * @param {Array}  [opts.reviews]       Used to compute approval state.
+ * @param {object} [opts.currentUser]   { login } — gates the Approve button.
+ * @param {Function} [opts.onApprove]   Called when the Approve button is clicked.
+ * @param {Function} [opts.onMerge]     Called when the Merge button is clicked.
+ */
+export function renderPRHeader(pr, containerId = "pr-header", opts = {}) {
   const container = document.getElementById(containerId);
   if (!container) return;
   container.innerHTML = "";
+
+  const reviews = opts.reviews || [];
+  const currentUser = opts.currentUser || null;
+  const approval = computeApprovalState(reviews, pr.user?.login);
 
   // Breadcrumb: owner / repo — clickable back to the repo PR list
   const repoFull = pr.base?.repo?.full_name;
@@ -343,6 +424,135 @@ export function renderPRHeader(pr, containerId = "pr-header") {
     stats.appendChild(minus);
     container.appendChild(stats);
   }
+
+  // Approval status badge — only meaningful for open PRs
+  if (pr.state === "open" && !pr.merged) {
+    const reviewBadge = el("span", "review-state-badge");
+    if (approval.status === "approved") {
+      reviewBadge.classList.add("review-approved");
+      reviewBadge.title = `Approved by: ${approval.approvedBy.join(", ")}`;
+      reviewBadge.appendChild(checkIcon());
+      reviewBadge.appendChild(
+        document.createTextNode(
+          approval.approvedBy.length > 1
+            ? `Approved by ${approval.approvedBy.length} reviewers`
+            : `Approved`
+        )
+      );
+    } else if (approval.status === "changes_requested") {
+      reviewBadge.classList.add("review-changes");
+      reviewBadge.title = `Changes requested by: ${approval.changesRequestedBy.join(", ")}`;
+      reviewBadge.appendChild(xIcon());
+      reviewBadge.appendChild(document.createTextNode("Changes requested"));
+    } else {
+      reviewBadge.classList.add("review-pending");
+      reviewBadge.appendChild(dotIcon());
+      reviewBadge.appendChild(document.createTextNode("Review required"));
+    }
+    container.appendChild(reviewBadge);
+  }
+
+  // Action buttons — Approve + Merge. Only on open, non-merged PRs.
+  if (pr.state === "open" && !pr.merged) {
+    const actions = el("div", "pr-header-actions");
+
+    // The current user may approve if they're a reviewer (assigned or
+    // already reviewed) AND not the PR author.
+    const isAuthor = currentUser && pr.user && currentUser.login === pr.user.login;
+    const requestedReviewerLogins = new Set(
+      (pr.requested_reviewers || []).map((u) => u.login)
+    );
+    const reviewerLogins = new Set(
+      (reviews || []).map((r) => r.user && r.user.login).filter(Boolean)
+    );
+    const isReviewer =
+      currentUser &&
+      (requestedReviewerLogins.has(currentUser.login) ||
+        reviewerLogins.has(currentUser.login));
+
+    // Has the current user already approved? (latest review by them)
+    const myLatestState = (() => {
+      if (!currentUser) return null;
+      const mine = (reviews || [])
+        .filter((r) => r.user && r.user.login === currentUser.login)
+        .filter((r) => r.state !== "PENDING" && r.state !== "COMMENTED")
+        .sort(
+          (a, b) =>
+            new Date(b.submitted_at || b.created_at) -
+            new Date(a.submitted_at || a.created_at)
+        )[0];
+      return mine ? mine.state : null;
+    })();
+
+    if (currentUser && isReviewer && !isAuthor) {
+      const approveBtn = document.createElement("button");
+      approveBtn.type = "button";
+      approveBtn.className = "pr-action-btn pr-action-approve";
+      const alreadyApproved = myLatestState === "APPROVED";
+      approveBtn.disabled = alreadyApproved;
+      approveBtn.title = alreadyApproved
+        ? "You have already approved this PR"
+        : "Approve this PR";
+      approveBtn.appendChild(checkIcon());
+      approveBtn.appendChild(
+        document.createTextNode(alreadyApproved ? "Approved" : "Approve")
+      );
+      approveBtn.addEventListener("click", () => {
+        if (typeof opts.onApprove === "function") opts.onApprove(approveBtn);
+      });
+      actions.appendChild(approveBtn);
+    }
+
+    // Merge button — enabled only when the PR has at least one approval
+    // and no outstanding "Changes requested" review. We trust GitHub's
+    // own mergeability flags as a secondary gate, but the UI gate here
+    // is "is approved by a reviewer?" per the user's request.
+    const mergeBtn = document.createElement("button");
+    mergeBtn.type = "button";
+    mergeBtn.className = "pr-action-btn pr-action-merge";
+    mergeBtn.appendChild(mergeIcon());
+    mergeBtn.appendChild(document.createTextNode("Merge"));
+    let mergeDisabledReason = null;
+    if (!approval.isApproved) {
+      mergeDisabledReason = approval.hasChangesRequested
+        ? "Changes have been requested"
+        : "Waiting for an approval from a reviewer";
+    } else if (pr.mergeable === false) {
+      mergeDisabledReason = "Merge conflicts — resolve before merging";
+    } else if (pr.draft) {
+      mergeDisabledReason = "PR is in draft";
+    }
+    mergeBtn.disabled = !!mergeDisabledReason;
+    mergeBtn.title = mergeDisabledReason || "Merge this PR";
+    mergeBtn.addEventListener("click", () => {
+      if (typeof opts.onMerge === "function") opts.onMerge(mergeBtn);
+    });
+    actions.appendChild(mergeBtn);
+
+    container.appendChild(actions);
+  }
+}
+
+// Inline SVG helpers used by the header badge / buttons
+function checkIcon() {
+  const span = el("span", "icon-inline");
+  span.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"></path></svg>`;
+  return span;
+}
+function xIcon() {
+  const span = el("span", "icon-inline");
+  span.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"></path></svg>`;
+  return span;
+}
+function dotIcon() {
+  // Plain CSS dot — the SVG version had a tiny circle inside a 16x16
+  // viewBox, which left empty space around it and looked off-center.
+  return el("span", "icon-dot");
+}
+function mergeIcon() {
+  const span = el("span", "icon-inline");
+  span.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8-9a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM4.25 4a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"></path></svg>`;
+  return span;
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +601,7 @@ function makeCollapsible(header, opts = {}) {
   header._setCollapsed = applyCollapsed;
 }
 
-export function renderIssueComment(comment, collapseCtx, seenCtx) {
+export function renderIssueComment(comment, collapseCtx, seenCtx, prInfo = null) {
   const item = el("div", "timeline-item");
   const commentId = `ic-${comment.id}`;
   item.dataset.commentId = commentId;
@@ -424,7 +634,7 @@ export function renderIssueComment(comment, collapseCtx, seenCtx) {
   // Body
   const body = el("div", "comment-body");
   const inner = el("div", "comment-body-inner");
-  inner.innerHTML = renderMarkdown(comment.body);
+  inner.innerHTML = renderMarkdown(comment.body, { repoCtx: prInfo });
   body.appendChild(inner);
   content.appendChild(body);
 
@@ -492,7 +702,7 @@ export function renderReview(review, threads, prInfo, collapseCtx, seenCtx) {
   if (review.body && review.body.trim()) {
     const body = el("div", "comment-body");
     const inner = el("div", "comment-body-inner");
-    inner.innerHTML = renderMarkdown(review.body);
+    inner.innerHTML = renderMarkdown(review.body, { repoCtx: prInfo });
     body.appendChild(inner);
     content.appendChild(body);
   }
@@ -553,13 +763,16 @@ function jumpToDiffComment(path, rootId) {
 export function renderReviewThread(thread, prInfo, seenCtx) {
   const container = el("div", "review-thread-container");
 
-  // If the root has a file path + id, make the path badge and diff hunk
-  // clickable jumps to the Files Changed tab at this thread's location.
-  const canJump =
+  // If the root has a file path + id, the path badge and diff hunk
+  // open a preview modal with the file's full diff. The actual click
+  // handling is delegated globally in app.js — we just mark elements
+  // as clickable and stash the keys it needs.
+  const canPreview =
     thread.root && thread.root.path && thread.root.id != null;
-  const jump = canJump
-    ? () => jumpToDiffComment(thread.root.path, thread.root.id)
-    : null;
+  if (canPreview) {
+    container.dataset.filename = thread.root.path;
+    container.dataset.rootCommentId = String(thread.root.id);
+  }
 
   // File path badge (+ line number)
   if (thread.root && thread.root.path) {
@@ -568,10 +781,9 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
     const lineNo = thread.root.line ?? thread.root.original_line;
     pathBadge.textContent = lineNo ? `${pathText}:${lineNo}` : pathText;
 
-    if (jump) {
+    if (canPreview) {
       pathBadge.classList.add("clickable");
-      pathBadge.title = "Jump to this line in Files Changed";
-      pathBadge.addEventListener("click", jump);
+      pathBadge.title = "Preview this file's diff";
     }
     container.appendChild(pathBadge);
   }
@@ -579,23 +791,22 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
   // Diff hunk — rendered as a table with old/new line numbers
   if (thread.root && thread.root.diff_hunk) {
     const hunkTable = renderDiffHunkTable(thread.root.diff_hunk);
-    if (jump) {
+    if (canPreview) {
       hunkTable.classList.add("clickable");
-      hunkTable.title = "Jump to this line in Files Changed";
-      hunkTable.addEventListener("click", jump);
+      hunkTable.title = "Preview this file's diff";
     }
     container.appendChild(hunkTable);
   }
 
   // Root comment
   if (thread.root) {
-    container.appendChild(buildCommentBlock(thread.root, seenCtx));
+    container.appendChild(buildCommentBlock(thread.root, seenCtx, prInfo));
   }
 
   // Replies
   if (thread.replies && thread.replies.length) {
     for (const reply of thread.replies) {
-      const replyEl = buildCommentBlock(reply, seenCtx);
+      const replyEl = buildCommentBlock(reply, seenCtx, prInfo);
       replyEl.classList.add("thread-reply");
       container.appendChild(replyEl);
     }
@@ -623,7 +834,7 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
         body
       );
       // Append new reply into the thread
-      const newEl = buildCommentBlock(newComment, seenCtx);
+      const newEl = buildCommentBlock(newComment, seenCtx, prInfo);
       newEl.classList.add("thread-reply");
       container.insertBefore(newEl, replyForm);
       textarea.value = "";
@@ -943,7 +1154,7 @@ export function renderTimeline(containerId, entries, prInfo) {
       let commentId = null;
       switch (entry.type) {
         case "issue_comment":
-          itemsContainer.appendChild(renderIssueComment(entry.data, collapseCtx, seenCtx));
+          itemsContainer.appendChild(renderIssueComment(entry.data, collapseCtx, seenCtx, prInfo));
           commentId = `ic-${entry.data.id}`;
           break;
         case "review":
@@ -1058,7 +1269,7 @@ export function renderTimeline(containerId, entries, prInfo) {
         body
       );
       // Append the new comment to the items list
-      itemsContainer.appendChild(renderIssueComment(newComment, collapseCtx, seenCtx));
+      itemsContainer.appendChild(renderIssueComment(newComment, collapseCtx, seenCtx, prInfo));
       textarea.value = "";
     } catch (err) {
       console.error("Comment failed:", err);
@@ -1437,7 +1648,7 @@ function renderDiffHunkTable(diffHunkStr) {
   return table;
 }
 
-function buildCommentBlock(comment, seenCtx) {
+function buildCommentBlock(comment, seenCtx, prInfo = null) {
   const block = el("div", "thread-comment");
   // Stable id so seen-tracking and the Collapse old button can find replies
   const commentId = `rc-${comment.id}`;
@@ -1463,7 +1674,7 @@ function buildCommentBlock(comment, seenCtx) {
 
   const body = el("div", "comment-body");
   const inner = el("div", "comment-body-inner");
-  inner.innerHTML = renderMarkdown(comment.body);
+  inner.innerHTML = renderMarkdown(comment.body, { repoCtx: prInfo });
   body.appendChild(inner);
   block.appendChild(body);
 

@@ -1,8 +1,19 @@
-import { fetchPR, fetchPulls, fetchRepoUsers, fetchActions } from "./lib/api.js";
+import {
+  fetchPR,
+  fetchPulls,
+  fetchRepoUsers,
+  fetchActions,
+  fetchCurrentUser,
+  fetchCommit,
+  approvePR,
+  mergePR,
+} from "./lib/api.js";
+import { renderCommitDetail } from "./lib/commit-detail-renderer.js";
 import { renderActionsPanel } from "./lib/actions-renderer.js";
 import { buildTimeline } from "./lib/timeline.js";
 import { classifyTimeline, groupReviewCommentThreads } from "./lib/classifier.js";
 import { renderDiffPanel } from "./lib/diff-renderer.js";
+import { renderCommitsPanel } from "./lib/commits-renderer.js";
 import {
   renderPRHeader,
   renderTimeline,
@@ -14,6 +25,24 @@ import {
 // --- State ---
 
 let currentPR = null; // { owner, repo, number }
+let currentUser = null; // { login, avatar_url } once fetched
+// Last-loaded PR payload — used by the file-diff preview modal to find
+// files + threads without re-fetching.
+let currentPRData = null;
+let currentPRThreads = null; // flat array of review threads
+
+// Lazily fetch the current GitHub user; cache for the lifetime of the
+// page. The Approve button needs this to know whether the viewer is a
+// reviewer on the PR.
+async function ensureCurrentUser() {
+  if (currentUser) return currentUser;
+  try {
+    currentUser = await fetchCurrentUser();
+  } catch {
+    currentUser = null; // App keeps working without it; just no Approve button
+  }
+  return currentUser;
+}
 
 // --- URL parsing ---
 
@@ -501,22 +530,36 @@ async function loadPR(owner, repo, number, initialTab = null) {
   setLoading(true);
   document.getElementById("index-panel").hidden = true;
   document.getElementById("pr-panel").hidden = true;
+  const commitPanelEl = document.getElementById("commit-panel");
+  if (commitPanelEl) commitPanelEl.hidden = true;
 
   try {
-    const data = await fetchPR(owner, repo, number);
+    const [data, user] = await Promise.all([
+      fetchPR(owner, repo, number),
+      ensureCurrentUser(),
+    ]);
     const timeline = buildTimeline(data);
     const threadMap = groupReviewCommentThreads(data.reviewComments);
+    // Cache for modal previews of in-comment file diffs
+    currentPRData = data;
+    currentPRThreads = Array.from(threadMap.values());
     const { conversation, aiComments } = classifyTimeline(
       timeline,
       data.reviewComments
     );
 
-    // Render PR header
-    renderPRHeader(data.pr, "pr-header");
+    // Render PR header (with Approve/Merge buttons + review-state badge)
+    renderPRHeader(data.pr, "pr-header", {
+      reviews: data.reviews || [],
+      currentUser: user,
+      onApprove: (btn) => handleApprove(btn),
+      onMerge: (btn) => handleMerge(btn, data.pr),
+    });
 
     // Render tabs
     renderTimeline("panel-conversation", conversation, currentPR);
     renderTimeline("panel-ai-comments", aiComments, currentPR);
+    renderCommitsPanel("panel-commits", data.commits || [], currentPR);
     renderDiffPanel(
       "panel-files-changed",
       data.files,
@@ -531,6 +574,9 @@ async function loadPR(owner, repo, number, initialTab = null) {
     );
     document.getElementById("ai-count").textContent = String(
       aiComments.length
+    );
+    document.getElementById("commits-count").textContent = String(
+      (data.commits || []).length
     );
     document.getElementById("files-count").textContent = String(
       data.files.length
@@ -549,6 +595,266 @@ async function loadPR(owner, repo, number, initialTab = null) {
     // Fetch Actions data in the background (doesn't block PR view)
     loadActionsForCurrentPR();
     startActionsAutoRefresh();
+  } catch (err) {
+    showError(err.message);
+    document.getElementById("index-panel").hidden = false;
+  } finally {
+    setLoading(false);
+  }
+}
+
+// --- PR header actions: approve + merge ---
+
+async function handleApprove(btn) {
+  if (!currentPR) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Approving...";
+  try {
+    await approvePR(currentPR.owner, currentPR.repo, currentPR.number);
+    showToast("Approved", "success");
+    // Reload the PR so the header reflects the new state and the Merge
+    // button enables.
+    await loadPR(currentPR.owner, currentPR.repo, currentPR.number);
+  } catch (err) {
+    showError(err.message || "Failed to approve");
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function handleMerge(btn, pr) {
+  if (!currentPR) return;
+  // Default to "merge" commit; the user can extend later if they want
+  // squash/rebase to be selectable.
+  if (
+    !confirm(
+      `Merge "${pr.title}" into ${pr.base?.ref || "the base branch"}?`
+    )
+  ) {
+    return;
+  }
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Merging...";
+  try {
+    await mergePR(currentPR.owner, currentPR.repo, currentPR.number, {
+      merge_method: "merge",
+    });
+    showToast("Merged", "success");
+    await loadPR(currentPR.owner, currentPR.repo, currentPR.number);
+  } catch (err) {
+    showError(err.message || "Failed to merge");
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+// --- File diff preview modal ---
+//
+// Triggered when the user clicks a file-path badge or diff-hunk inside
+// a comment. Opens an in-page modal with the FULL file diff for that
+// file (from the currently-loaded PR), with the comment's row scrolled
+// into view and flashed.
+
+let filePreviewLastFocus = null;
+
+async function openFilePreview(filename, threadRootId) {
+  const modal = document.getElementById("file-preview-modal");
+  const body = document.getElementById("file-preview-body");
+  const title = document.getElementById("file-preview-title");
+  if (!modal || !body) return;
+
+  filePreviewLastFocus = document.activeElement;
+  modal.hidden = false;
+  document.body.style.overflow = "hidden";
+  title.textContent = filename;
+  body.innerHTML = '<div class="modal-loading">Loading diff...</div>';
+
+  try {
+    const file = (currentPRData?.files || []).find(
+      (f) => f.filename === filename
+    );
+    if (!file) {
+      throw new Error(`File "${filename}" not found in this PR's diff.`);
+    }
+    const { renderFilePreview } = await import("./lib/diff-renderer.js");
+    body.innerHTML = "";
+    body.appendChild(
+      renderFilePreview(file, currentPRThreads || [], {
+        highlightThreadId: threadRootId,
+      })
+    );
+  } catch (err) {
+    body.innerHTML = `<div class="modal-error">${escapeHtml(err.message || "Failed to render file diff.")}</div>`;
+  }
+}
+
+function closeFilePreview() {
+  const modal = document.getElementById("file-preview-modal");
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  document.body.style.overflow = "";
+  if (filePreviewLastFocus && typeof filePreviewLastFocus.focus === "function") {
+    try { filePreviewLastFocus.focus(); } catch { /* ignore */ }
+  }
+  filePreviewLastFocus = null;
+}
+
+function initFilePreviewModal() {
+  const modal = document.getElementById("file-preview-modal");
+  if (!modal) return;
+
+  modal.addEventListener("click", (e) => {
+    if (e.target.closest("[data-close]")) closeFilePreview();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.hidden) closeFilePreview();
+  });
+
+  // Delegated handler: any click on a clickable file-path badge or diff
+  // hunk inside a review-thread container opens the preview modal.
+  document.addEventListener("click", (e) => {
+    const target = e.target.closest(
+      ".review-thread-container .file-path-badge.clickable, .review-thread-container .diff-hunk-table.clickable"
+    );
+    if (!target) return;
+    const container = target.closest(".review-thread-container");
+    if (!container) return;
+    if (
+      e.button !== 0 ||
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey
+    ) {
+      return;
+    }
+    const filename = container.dataset.filename;
+    const rootId = container.dataset.rootCommentId;
+    if (!filename) return;
+    e.preventDefault();
+    openFilePreview(filename, rootId);
+  });
+}
+
+// --- Commit preview modal ---
+//
+// In-page lightbox for the commit detail. Triggered by clicking any
+// `.commit-mention` link (typically auto-linked SHAs inside comments,
+// and parent-commit chips on the commit detail page itself).
+
+let commitPreviewLastFocus = null;
+
+function openCommitPreview(owner, repo, sha) {
+  const modal = document.getElementById("commit-preview-modal");
+  const body = document.getElementById("commit-preview-body");
+  const title = document.getElementById("commit-preview-title");
+  if (!modal || !body) return;
+  commitPreviewLastFocus = document.activeElement;
+  title.textContent = `Commit ${sha.slice(0, 7)}`;
+  body.innerHTML = `
+    <div id="commit-preview-header"></div>
+    <div id="commit-preview-files"></div>
+  `;
+  // Show a loading state while fetching
+  body.querySelector("#commit-preview-files").innerHTML =
+    '<div class="modal-loading">Loading commit...</div>';
+  modal.hidden = false;
+  document.body.style.overflow = "hidden";
+
+  fetchCommit(owner, repo, sha)
+    .then((commit) => {
+      // Re-render only if the modal is still showing this same commit
+      if (modal.hidden || modal.dataset.openSha !== sha) return;
+      renderCommitDetail(commit, { owner, repo }, {
+        headerId: "commit-preview-header",
+        filesId: "commit-preview-files",
+      });
+      title.textContent =
+        (commit.commit?.message || "").split("\n")[0].slice(0, 80) ||
+        `Commit ${sha.slice(0, 7)}`;
+    })
+    .catch((err) => {
+      const filesEl = body.querySelector("#commit-preview-files");
+      if (filesEl) {
+        filesEl.innerHTML = `<div class="modal-error">Failed to load commit: ${escapeHtml(err.message)}</div>`;
+      }
+    });
+
+  modal.dataset.openSha = sha;
+}
+
+function closeCommitPreview() {
+  const modal = document.getElementById("commit-preview-modal");
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  delete modal.dataset.openSha;
+  document.body.style.overflow = "";
+  if (commitPreviewLastFocus && typeof commitPreviewLastFocus.focus === "function") {
+    try { commitPreviewLastFocus.focus(); } catch { /* ignore */ }
+  }
+  commitPreviewLastFocus = null;
+}
+
+function initCommitPreviewModal() {
+  const modal = document.getElementById("commit-preview-modal");
+  if (!modal) return;
+
+  // Close button + backdrop both have data-close
+  modal.addEventListener("click", (e) => {
+    if (e.target.closest("[data-close]")) closeCommitPreview();
+  });
+
+  // Escape closes the topmost commit preview only (don't fight other modals)
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.hidden) closeCommitPreview();
+  });
+
+  // Delegate clicks on `.commit-mention` anywhere: show a preview
+  // instead of navigating. We only intercept LEFT clicks without
+  // modifier keys so cmd/ctrl/middle-click still open the link
+  // normally (in case the user wants a fresh page or new tab).
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest("a.commit-mention");
+    if (!a) return;
+    if (
+      e.button !== 0 ||
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey ||
+      a.target === "_blank"
+    ) {
+      return;
+    }
+    const href = a.getAttribute("href") || "";
+    // Expected format: #owner/repo/commit/{sha}
+    const match = href.match(/^#([^/]+)\/([^/]+)\/commit\/([0-9a-f]{4,40})$/i);
+    if (!match) return;
+    e.preventDefault();
+    openCommitPreview(match[1], match[2], match[3]);
+  });
+}
+
+// --- Commit detail view ---
+
+async function loadCommit(owner, repo, sha) {
+  // Reset PR-related state when navigating to a commit page
+  currentPR = null;
+  stopActionsAutoRefresh?.();
+  clearError();
+  setLoading(true);
+  document.getElementById("index-panel").hidden = true;
+  document.getElementById("pr-panel").hidden = true;
+  document.getElementById("commit-panel").hidden = true;
+
+  try {
+    const commit = await fetchCommit(owner, repo, sha);
+    renderCommitDetail(commit, { owner, repo });
+    document.getElementById("commit-panel").hidden = false;
+    document.title = `${(commit.commit?.message || "Commit").split("\n")[0].slice(0, 60)} \u00b7 ${owner}/${repo}`;
+    window.scrollTo(0, 0);
   } catch (err) {
     showError(err.message);
     document.getElementById("index-panel").hidden = false;
@@ -761,7 +1067,13 @@ function showToast(message, kind = "success", url = null) {
 
 // --- Tab switching ---
 
-const KNOWN_TABS = ["conversation", "ai-comments", "files-changed", "actions"];
+const KNOWN_TABS = [
+  "conversation",
+  "ai-comments",
+  "commits",
+  "files-changed",
+  "actions",
+];
 
 function initTabs() {
   document.getElementById("tab-nav").addEventListener("click", (e) => {
@@ -785,6 +1097,8 @@ function handleHash() {
   if (!hash) {
     document.getElementById("index-panel").hidden = false;
     document.getElementById("pr-panel").hidden = true;
+    const commitPanel = document.getElementById("commit-panel");
+    if (commitPanel) commitPanel.hidden = true;
     document.getElementById("current-repo-header").hidden = true;
     document.title = "PR Reviewer";
     return;
@@ -793,10 +1107,19 @@ function handleHash() {
   const repoMatch = hash.match(/^repo=(.+)$/);
   if (repoMatch) {
     document.getElementById("pr-panel").hidden = true;
+    const commitPanel = document.getElementById("commit-panel");
+    if (commitPanel) commitPanel.hidden = true;
     document.getElementById("index-panel").hidden = false;
     const repoStr = decodeURIComponent(repoMatch[1]);
     document.getElementById("repo-input").value = repoStr;
     loadRepoPRs(repoStr);
+    return;
+  }
+  // Commit hash: owner/repo/commit/<sha>
+  const commitMatch = hash.match(/^([^/]+)\/([^/]+)\/commit\/([0-9a-f]{4,40})$/i);
+  if (commitMatch) {
+    const [, owner, repo, sha] = commitMatch;
+    loadCommit(owner, repo, sha);
     return;
   }
   // PR hash with optional tab: owner/repo/number or owner/repo/number/tab
@@ -1016,6 +1339,7 @@ function initClearDataModal() {
     // Send the user back to a clean home (Index) view so the reset is obvious.
     location.hash = "";
     document.getElementById("pr-panel").hidden = true;
+    document.getElementById("commit-panel").hidden = true;
     document.getElementById("index-panel").hidden = false;
     document.getElementById("current-repo-header").hidden = true;
     document.getElementById("pr-list-controls").hidden = true;
@@ -1053,6 +1377,7 @@ function init() {
     e.preventDefault();
     location.hash = "";
     document.getElementById("pr-panel").hidden = true;
+    document.getElementById("commit-panel").hidden = true;
     document.getElementById("index-panel").hidden = false;
     document.getElementById("current-repo-header").hidden = true;
     document.getElementById("pr-list-controls").hidden = true;
@@ -1067,6 +1392,8 @@ function init() {
   initFilterButtons();
   initThemeToggle();
   initClearDataModal();
+  initCommitPreviewModal();
+  initFilePreviewModal();
   renderRecentRepos();
 
   // When the browser tab becomes visible again, refresh actions data

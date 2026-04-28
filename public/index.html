@@ -30,6 +30,30 @@
     </div>
   </header>
 
+<!-- File diff preview modal (opened from in-comment file path/hunk) -->
+  <div id="file-preview-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-content modal-content-wide" role="dialog" aria-labelledby="file-preview-title">
+      <div class="modal-header">
+        <h2 id="file-preview-title">File diff</h2>
+        <button class="modal-close" type="button" data-close aria-label="Close">&times;</button>
+      </div>
+      <div id="file-preview-body"></div>
+    </div>
+  </div>
+
+<!-- Commit preview modal -->
+  <div id="commit-preview-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-content modal-content-wide" role="dialog" aria-labelledby="commit-preview-title">
+      <div class="modal-header">
+        <h2 id="commit-preview-title">Commit preview</h2>
+        <button class="modal-close" type="button" data-close aria-label="Close">&times;</button>
+      </div>
+      <div id="commit-preview-body"></div>
+    </div>
+  </div>
+
   <!-- Clear data modal -->
   <div id="clear-data-modal" class="modal" hidden>
     <div class="modal-backdrop" data-close></div>
@@ -119,6 +143,12 @@
       <div id="pr-list"></div>
     </section>
 
+    <!-- Commit panel (shown when viewing a single commit) -->
+    <section id="commit-panel" hidden>
+      <div id="commit-header"></div>
+      <div id="commit-files"></div>
+    </section>
+
     <!-- PR panel (shown when a PR is loaded) -->
     <section id="pr-panel" hidden>
       <div id="pr-header"></div>
@@ -146,6 +176,10 @@
           </svg>
           AI Comments <span class="counter" id="ai-count">0</span>
         </button>
+        <button role="tab" aria-selected="false" data-tab="commits">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"></path></svg>
+          Commits <span class="counter" id="commits-count">0</span>
+        </button>
         <button role="tab" aria-selected="false" data-tab="files-changed">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"></path></svg>
           Files Changed <span class="counter" id="files-count">0</span>
@@ -159,6 +193,7 @@
       <div id="tab-panels">
         <div id="panel-conversation" role="tabpanel"></div>
         <div id="panel-ai-comments" role="tabpanel" hidden></div>
+        <div id="panel-commits" role="tabpanel" hidden></div>
         <div id="panel-files-changed" role="tabpanel" hidden></div>
         <div id="panel-actions" role="tabpanel" hidden></div>
       </div>

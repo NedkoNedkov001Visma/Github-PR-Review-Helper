@@ -1,3 +1,47 @@
+export async function fetchCommit(owner, repo, sha) {
+  const res = await fetch(`/api/repos/${owner}/${repo}/commits/${sha}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || `Failed to fetch commit: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchCurrentUser() {
+  const res = await fetch(`/api/user`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || `Failed to fetch user: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function approvePR(owner, repo, number, body = "") {
+  const res = await fetch(`/api/pr/${owner}/${repo}/${number}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to approve PR");
+  }
+  return res.json();
+}
+
+export async function mergePR(owner, repo, number, opts = {}) {
+  const res = await fetch(`/api/pr/${owner}/${repo}/${number}/merge`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to merge PR");
+  }
+  return res.json();
+}
+
 export async function fetchPR(owner, repo, number) {
   const res = await fetch(`/api/pr/${owner}/${repo}/${number}`);
   if (!res.ok) {

@@ -368,6 +368,82 @@ function statusLabel(status) {
  *   A pre-built map from `groupReviewCommentThreads` (keyed by root comment
  *   id).  Used here to derive per-file comment position maps.
  */
+/**
+ * Lightweight one-file preview — used by the in-comment file-diff modal.
+ *
+ * Renders a header (filename + status + stats) and the diff table with
+ * any matching review threads inlined at the right positions. Does NOT
+ * touch the persisted file-state machinery (no viewed/collapse/hidden).
+ *
+ * @param {object} file              GitHub PR file object (filename, patch, status, additions, deletions, sha)
+ * @param {Object[]} [threads]       All review-comment threads for the PR.
+ * @param {object} [opts]
+ * @param {string} [opts.highlightThreadId]  If provided, the row containing
+ *                                           this thread is flashed and scrolled to.
+ * @returns {HTMLElement}
+ */
+export function renderFilePreview(file, threads = [], opts = {}) {
+  const wrap = document.createElement("div");
+  wrap.className = "file-preview";
+
+  const header = document.createElement("div");
+  header.className = "file-preview-header";
+  const name = document.createElement("code");
+  name.className = "file-preview-name";
+  name.textContent = file.filename;
+  header.appendChild(name);
+
+  const meta = document.createElement("span");
+  meta.className = "file-preview-meta";
+  const adds = file.additions || 0;
+  const dels = file.deletions || 0;
+  meta.innerHTML = `
+    <span class="status-pill status-${file.status}">${escapeHtml(statusLabel(file.status))}</span>
+    <span class="diff-stat-add">+${adds}</span>
+    <span class="diff-stat-del">-${dels}</span>
+  `;
+  header.appendChild(meta);
+  wrap.appendChild(header);
+
+  if (!file.patch) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "file-preview-empty";
+    placeholder.textContent =
+      file.status === "renamed"
+        ? `Renamed from ${file.previous_filename || "?"}`
+        : "Binary file or no diff available.";
+    wrap.appendChild(placeholder);
+    return wrap;
+  }
+
+  const hunks = parsePatch(file.patch);
+  const commentMap = buildCommentPositionMap(threads, file.filename);
+  const table = renderDiffTable(hunks, commentMap);
+
+  // Wrap the table so the header stays pinned and only the diff scrolls.
+  const scroll = document.createElement("div");
+  scroll.className = "file-preview-scroll";
+  scroll.appendChild(table);
+  wrap.appendChild(scroll);
+
+  if (opts.highlightThreadId) {
+    requestAnimationFrame(() => {
+      const target = wrap.querySelector(
+        `#thread-${opts.highlightThreadId}`
+      );
+      if (target) {
+        // Scroll within the inner scroll container, not the whole page,
+        // so the modal's outer chrome doesn't move.
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("jump-flash");
+        setTimeout(() => target.classList.remove("jump-flash"), 2000);
+      }
+    });
+  }
+
+  return wrap;
+}
+
 export function renderDiffPanel(containerId, files, reviewComments, threadMap, prInfo) {
   const container = document.getElementById(containerId);
   if (!container) return;
