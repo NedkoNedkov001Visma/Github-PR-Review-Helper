@@ -737,14 +737,141 @@ export function renderTimeline(containerId, entries, prInfo) {
   const collapseCtx = prInfo ? getCollapseContext(prInfo) : null;
   const seenCtx = prInfo ? getSeenContext(prInfo) : null;
 
-  // Load global sort preference
+  // Load global sort preference + per-PR filter preference
   const sortPref = loadSortPref();
+  const filterPref = loadFilterPref(prInfo);
+
+  // Validate filterPref.authors against the actual authors in this PR.
+  // (Stale logins from a previous load shouldn't keep filtering.)
+  const allAuthors = collectEntryAuthors(entries);
+  filterPref.authors = filterPref.authors.filter((a) => allAuthors.has(a));
 
   // Bulk-action header above the timeline
   const actionBar = el("div", "timeline-action-bar");
   const countLabel = el("span", "timeline-action-count");
-  countLabel.textContent = `${entries.length} item${entries.length !== 1 ? "s" : ""}`;
   actionBar.appendChild(countLabel);
+
+  // ── Filter controls ─────────────────────────────────────────────
+  const filterGroup = el("div", "timeline-filters");
+
+  // Authors multi-select popover
+  const authorsBtn = document.createElement("button");
+  authorsBtn.type = "button";
+  authorsBtn.className = "timeline-filter-btn";
+  const authorsBadge = document.createElement("span");
+  authorsBadge.className = "filter-badge";
+  const updateAuthorsBtn = () => {
+    authorsBtn.firstChild?.remove();
+    authorsBtn.prepend(document.createTextNode("Authors "));
+    if (filterPref.authors.length) {
+      authorsBadge.textContent = filterPref.authors.length;
+      authorsBadge.hidden = false;
+      authorsBtn.classList.add("active");
+    } else {
+      authorsBadge.hidden = true;
+      authorsBtn.classList.remove("active");
+    }
+  };
+  authorsBtn.appendChild(authorsBadge);
+  filterGroup.appendChild(authorsBtn);
+
+  const authorsPopover = el("div", "filter-popover");
+  authorsPopover.hidden = true;
+  for (const author of [...allAuthors].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" })
+  )) {
+    const row = document.createElement("label");
+    row.className = "filter-popover-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = author;
+    cb.checked = filterPref.authors.includes(author);
+    cb.addEventListener("change", () => {
+      if (cb.checked) {
+        if (!filterPref.authors.includes(author)) filterPref.authors.push(author);
+      } else {
+        filterPref.authors = filterPref.authors.filter((a) => a !== author);
+      }
+      saveFilterPref(prInfo, filterPref);
+      updateAuthorsBtn();
+      renderEntries();
+    });
+    const labelText = document.createElement("span");
+    labelText.textContent = author;
+    row.appendChild(cb);
+    row.appendChild(labelText);
+    authorsPopover.appendChild(row);
+  }
+  if (allAuthors.size === 0) {
+    const empty = document.createElement("div");
+    empty.className = "filter-popover-empty";
+    empty.textContent = "No authors";
+    authorsPopover.appendChild(empty);
+  }
+  filterGroup.appendChild(authorsPopover);
+
+  // Toggle the popover; close on outside click / Escape
+  authorsBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    authorsPopover.hidden = !authorsPopover.hidden;
+  });
+  document.addEventListener("click", (e) => {
+    if (!authorsPopover.hidden && !filterGroup.contains(e.target)) {
+      authorsPopover.hidden = true;
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") authorsPopover.hidden = true;
+  });
+
+  // Reply filter
+  const replySelect = document.createElement("select");
+  replySelect.className = "timeline-filter-replies";
+  for (const opt of [
+    { value: "any", label: "All comments" },
+    { value: "with", label: "With replies" },
+    { value: "without", label: "Without replies" },
+  ]) {
+    const o = document.createElement("option");
+    o.value = opt.value;
+    o.textContent = opt.label;
+    if (opt.value === filterPref.replies) o.selected = true;
+    replySelect.appendChild(o);
+  }
+  replySelect.addEventListener("change", () => {
+    filterPref.replies = replySelect.value;
+    saveFilterPref(prInfo, filterPref);
+    renderEntries();
+  });
+  filterGroup.appendChild(replySelect);
+
+  // Clear-filters button (only shown when something is filtered)
+  const clearFiltersBtn = document.createElement("button");
+  clearFiltersBtn.type = "button";
+  clearFiltersBtn.className = "timeline-filter-clear";
+  clearFiltersBtn.title = "Clear all filters";
+  clearFiltersBtn.textContent = "Clear";
+  const updateClearBtn = () => {
+    clearFiltersBtn.hidden =
+      filterPref.authors.length === 0 && filterPref.replies === "any";
+  };
+  clearFiltersBtn.addEventListener("click", () => {
+    filterPref.authors = [];
+    filterPref.replies = "any";
+    for (const cb of authorsPopover.querySelectorAll("input[type='checkbox']")) {
+      cb.checked = false;
+    }
+    replySelect.value = "any";
+    saveFilterPref(prInfo, filterPref);
+    updateAuthorsBtn();
+    updateClearBtn();
+    renderEntries();
+  });
+  filterGroup.appendChild(clearFiltersBtn);
+
+  actionBar.appendChild(filterGroup);
+  updateAuthorsBtn();
+  updateClearBtn();
 
   // Sort controls (field selector + direction toggle)
   const sortGroup = el("div", "timeline-sort");
@@ -802,10 +929,16 @@ export function renderTimeline(containerId, entries, prInfo) {
   const itemsContainer = el("div", "timeline-items");
   container.appendChild(itemsContainer);
 
-  /** Render entries into itemsContainer based on the current sort. */
+  /** Render entries into itemsContainer based on current filters + sort. */
   const renderEntries = () => {
     itemsContainer.innerHTML = "";
-    const sorted = sortEntries(entries, sortPref);
+    const filtered = filterEntries(entries, filterPref);
+    const sorted = sortEntries(filtered, sortPref);
+    countLabel.textContent =
+      filtered.length === entries.length
+        ? `${entries.length} item${entries.length !== 1 ? "s" : ""}`
+        : `${filtered.length} of ${entries.length} item${entries.length !== 1 ? "s" : ""}`;
+    updateClearBtn();
     for (const entry of sorted) {
       let commentId = null;
       switch (entry.type) {
@@ -1049,6 +1182,91 @@ function sortEntries(entries, pref) {
     copy.sort((a, b) => (new Date(a.timestamp) - new Date(b.timestamp)) * dir);
   }
   return copy;
+}
+
+// ---------------------------------------------------------------------------
+// Filter preference (per-PR: author multi-select + replies dropdown)
+// ---------------------------------------------------------------------------
+
+function filterStorageKey(prInfo) {
+  return prInfo
+    ? `pr-reviewer-filters:${prInfo.owner}/${prInfo.repo}/${prInfo.number}`
+    : null;
+}
+
+function loadFilterPref(prInfo) {
+  const empty = { authors: [], replies: "any" };
+  const key = filterStorageKey(prInfo);
+  if (!key) return empty;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw);
+    return {
+      authors: Array.isArray(parsed.authors) ? parsed.authors : [],
+      replies: ["any", "with", "without"].includes(parsed.replies)
+        ? parsed.replies
+        : "any",
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function saveFilterPref(prInfo, pref) {
+  const key = filterStorageKey(prInfo);
+  if (!key) return;
+  try {
+    // Don't save the empty default — keeps localStorage clean
+    if (pref.authors.length === 0 && pref.replies === "any") {
+      localStorage.removeItem(key);
+      return;
+    }
+    localStorage.setItem(key, JSON.stringify(pref));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Unique author logins across every entry (top-level authors only). */
+function collectEntryAuthors(entries) {
+  const set = new Set();
+  for (const entry of entries) {
+    const a = entryAuthor(entry);
+    if (a) set.add(a);
+  }
+  return set;
+}
+
+/** True when an entry has at least one nested reply. */
+function entryHasReplies(entry) {
+  if (!entry) return false;
+  if (entry.type === "review") {
+    for (const t of entry.threads || []) {
+      if (t?.replies && t.replies.length > 0) return true;
+    }
+    return false;
+  }
+  if (entry.type === "review_thread") {
+    return !!(entry.data?.replies && entry.data.replies.length > 0);
+  }
+  // issue_comment has no nested replies in our model
+  return false;
+}
+
+function filterEntries(entries, pref) {
+  if (!pref) return entries;
+  const authorSet = new Set(pref.authors);
+  return entries.filter((entry) => {
+    if (authorSet.size > 0) {
+      // Compare against the author getter (which lowercases). The list
+      // comes straight from collectEntryAuthors, so no case mismatch.
+      if (!authorSet.has(entryAuthor(entry))) return false;
+    }
+    if (pref.replies === "with" && !entryHasReplies(entry)) return false;
+    if (pref.replies === "without" && entryHasReplies(entry)) return false;
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------

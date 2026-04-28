@@ -117,10 +117,18 @@ function renderRecentRepos() {
   });
 }
 
+// Selected user-logins per filter group. Session-only — cleared on full reload.
+const userFilterSelections = {
+  authors: new Set(),
+  reviewers: new Set(),
+  participants: new Set(),
+};
+
 function getUserFilters() {
   return {
-    author: document.getElementById("filter-author")?.value.trim() || "",
-    reviewer: document.getElementById("filter-reviewer")?.value.trim() || "",
+    authors: [...userFilterSelections.authors],
+    reviewers: [...userFilterSelections.reviewers],
+    participants: [...userFilterSelections.participants],
   };
 }
 
@@ -142,8 +150,15 @@ async function loadRepoPRs(repoStr, state) {
   setLoading(true);
 
   try {
-    const { author, reviewer } = getUserFilters();
-    const pulls = await fetchPulls(owner, repo, currentFilter, author, reviewer);
+    const { authors, reviewers, participants } = getUserFilters();
+    const pulls = await fetchPulls(
+      owner,
+      repo,
+      currentFilter,
+      authors,
+      reviewers,
+      participants
+    );
     saveRecentRepo(owner, repo);
     document.getElementById("pr-list-controls").hidden = false;
     renderPRList(pulls, owner, repo);
@@ -184,15 +199,84 @@ async function updateUserSuggestions(owner, repo, pulls) {
   renderUserSuggestions();
 }
 
-function renderUserSuggestions() {
-  const list = document.getElementById("user-suggestions");
-  if (!list) return;
+/**
+ * Render the checkbox list inside a single .filter-multi popover.
+ * `kind` is "authors" / "reviewers" / "participants" — the key into
+ * `userFilterSelections`.
+ */
+function renderUserFilterPopover(filterDiv, kind) {
+  const listEl = filterDiv.querySelector(".filter-multi-list");
+  const searchEl = filterDiv.querySelector(".filter-multi-search");
+  if (!listEl) return;
+  const search = (searchEl?.value || "").toLowerCase().trim();
+  const selected = userFilterSelections[kind];
+
   const sorted = [...knownUsers.values()].sort((a, b) =>
     a.login.localeCompare(b.login, undefined, { sensitivity: "base" })
   );
-  list.innerHTML = sorted
-    .map((u) => `<option value="${u.login}"></option>`)
+
+  // Always show selected logins even if the underlying user object isn't
+  // in `knownUsers` yet (e.g. user typed nothing existed in the suggestion
+  // list). We synthesize a minimal entry so the checkbox stays visible.
+  const have = new Set(sorted.map((u) => u.login));
+  for (const login of selected) {
+    if (!have.has(login)) sorted.push({ login, avatar_url: "" });
+  }
+  // Sort selected first so they don't disappear off-screen as the list grows.
+  sorted.sort((a, b) => {
+    const aSel = selected.has(a.login);
+    const bSel = selected.has(b.login);
+    if (aSel !== bSel) return aSel ? -1 : 1;
+    return a.login.localeCompare(b.login, undefined, { sensitivity: "base" });
+  });
+
+  const matches = search
+    ? sorted.filter((u) => u.login.toLowerCase().includes(search))
+    : sorted;
+
+  if (matches.length === 0) {
+    listEl.innerHTML = `<div class="filter-popover-empty">${
+      knownUsers.size === 0 ? "Loading users..." : "No matches"
+    }</div>`;
+    return;
+  }
+
+  listEl.innerHTML = matches
+    .map((u) => {
+      const isChecked = selected.has(u.login) ? "checked" : "";
+      const avatar = u.avatar_url
+        ? `<img src="${u.avatar_url}" width="18" height="18" class="avatar-inline" alt="" />`
+        : `<span class="avatar-placeholder" aria-hidden="true"></span>`;
+      return `<label class="filter-popover-row">
+        <input type="checkbox" data-login="${escapeHtml(u.login)}" ${isChecked}>
+        ${avatar}
+        <span>${escapeHtml(u.login)}</span>
+      </label>`;
+    })
     .join("");
+}
+
+function updateFilterBadge(filterDiv, kind) {
+  const badge = filterDiv.querySelector(".filter-badge");
+  if (!badge) return;
+  const count = userFilterSelections[kind].size;
+  if (count === 0) {
+    badge.hidden = true;
+    badge.textContent = "";
+  } else {
+    badge.hidden = false;
+    badge.textContent = String(count);
+  }
+}
+
+function renderUserSuggestions() {
+  // Re-render all three filter popovers from `knownUsers`.
+  document.querySelectorAll(".filter-multi").forEach((filterDiv) => {
+    const kind = filterDiv.dataset.filter;
+    if (!userFilterSelections[kind]) return;
+    renderUserFilterPopover(filterDiv, kind);
+    updateFilterBadge(filterDiv, kind);
+  });
 }
 
 function initFilterButtons() {
@@ -206,39 +290,101 @@ function initFilterButtons() {
     });
   });
 
-  // Author / reviewer inputs — only reload on dropdown selection,
-  // clearing the field, or explicit commit (Enter / blur).
   const reloadPRs = () => {
     if (currentRepo) {
       loadRepoPRs(`${currentRepo.owner}/${currentRepo.repo}`);
     }
   };
-  ["filter-author", "filter-reviewer"].forEach((id) => {
-    const input = document.getElementById(id);
-    if (!input) return;
 
-    // Track the last value we searched for so `change` (blur/Enter)
-    // doesn't re-fire for an unchanged value.
-    input.dataset.lastValue = input.value;
+  // Tracks whether a popover's selection changed since it was opened.
+  // We defer the refetch until the popover closes so toggling several
+  // checkboxes only triggers ONE network round-trip.
+  const dirtyFilters = new Set();
 
-    input.addEventListener("input", (e) => {
-      // `insertReplacementText` fires when a datalist option is picked.
-      // An empty value means the user cleared the filter — reload too.
-      const isDropdownPick = e.inputType === "insertReplacementText";
-      const isCleared = input.value === "";
-      if (isDropdownPick || isCleared) {
-        input.dataset.lastValue = input.value;
-        reloadPRs();
+  // Close every open .filter-multi popover. If any of them had pending
+  // selection changes, fire one refetch.
+  const closeAllPopovers = () => {
+    let hadDirty = false;
+    document.querySelectorAll(".filter-multi").forEach((d) => {
+      const popover = d.querySelector(".filter-multi-popover");
+      if (popover && !popover.hidden) {
+        popover.hidden = true;
+        d.classList.remove("is-open");
+        if (dirtyFilters.has(d.dataset.filter)) hadDirty = true;
+      }
+    });
+    if (hadDirty) {
+      dirtyFilters.clear();
+      reloadPRs();
+    }
+  };
+
+  // Multi-select user filters (authors / reviewers / participants)
+  document.querySelectorAll(".filter-multi").forEach((filterDiv) => {
+    const kind = filterDiv.dataset.filter;
+    if (!userFilterSelections[kind]) return;
+    const btn = filterDiv.querySelector(".filter-multi-btn");
+    const popover = filterDiv.querySelector(".filter-multi-popover");
+    const searchEl = filterDiv.querySelector(".filter-multi-search");
+    const listEl = filterDiv.querySelector(".filter-multi-list");
+    if (!btn || !popover || !listEl) return;
+
+    // Initial render so the popover isn't empty when first opened
+    renderUserFilterPopover(filterDiv, kind);
+    updateFilterBadge(filterDiv, kind);
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = popover.hidden;
+      // Close any other popover (and apply its pending changes) before
+      // opening / closing this one.
+      closeAllPopovers();
+      if (willOpen) {
+        popover.hidden = false;
+        filterDiv.classList.add("is-open");
+        if (searchEl) searchEl.value = "";
+        renderUserFilterPopover(filterDiv, kind);
+        // Focus search for fast typing
+        searchEl?.focus();
       }
     });
 
-    // Enter / blur — commit typed values without reloading on every keystroke.
-    input.addEventListener("change", () => {
-      if (input.value !== input.dataset.lastValue) {
-        input.dataset.lastValue = input.value;
-        reloadPRs();
-      }
+    // Search filters the visible rows — does NOT reload PRs.
+    searchEl?.addEventListener("input", () => {
+      renderUserFilterPopover(filterDiv, kind);
     });
+    // Eat clicks inside the popover so the document handler doesn't close it.
+    popover.addEventListener("click", (e) => e.stopPropagation());
+
+    // Checkbox toggles update the selection set + badge but defer the
+    // refetch until the popover closes. Also clear the search box so the
+    // full list is visible again for the next pick.
+    listEl.addEventListener("change", (e) => {
+      const cb = e.target.closest("input[type='checkbox']");
+      if (!cb) return;
+      const login = cb.dataset.login;
+      if (!login) return;
+      if (cb.checked) userFilterSelections[kind].add(login);
+      else userFilterSelections[kind].delete(login);
+      updateFilterBadge(filterDiv, kind);
+      dirtyFilters.add(kind);
+      if (searchEl) searchEl.value = "";
+      // Re-render so newly-selected rows jump to the top and the search
+      // field's clearing is reflected.
+      renderUserFilterPopover(filterDiv, kind);
+      searchEl?.focus();
+    });
+  });
+
+  // Outside click closes any open popover (and applies pending changes).
+  document.addEventListener("click", (e) => {
+    if (e.target.closest(".filter-multi")) return;
+    closeAllPopovers();
+  });
+  // Escape closes any open popover (and applies pending changes).
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    closeAllPopovers();
   });
 }
 
@@ -765,7 +911,8 @@ function inventoryStoredData() {
       key.startsWith("pr-reviewer-file-state:") ||
       key.startsWith("pr-reviewer-hidden-files:") ||
       key.startsWith("pr-reviewer-collapsed-comments:") ||
-      key.startsWith("pr-reviewer-seen-comments:")
+      key.startsWith("pr-reviewer-seen-comments:") ||
+      key.startsWith("pr-reviewer-filters:")
     ) {
       prKeys.push(key);
     }

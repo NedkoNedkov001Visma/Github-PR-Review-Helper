@@ -144,12 +144,16 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
     const state = req.query.state || "open";
     const perPage = Math.min(parseInt(req.query.per_page) || 50, 100);
     const page = parseInt(req.query.page) || 1;
-    const author = (req.query.author || "").trim();
-    const reviewer = (req.query.reviewer || "").trim();
+    const toArr = (v) =>
+      (Array.isArray(v) ? v : v ? [v] : [])
+        .map((s) => String(s).trim())
+        .filter(Boolean);
+    const authors = toArr(req.query.author);
+    const reviewers = toArr(req.query.reviewer);
+    const participants = toArr(req.query.participant);
     const token = getToken();
 
-    // If author/reviewer filters are set, use the Search API.
-    if (author || reviewer) {
+    if (authors.length || reviewers.length || participants.length) {
       const normalize = (items) =>
         (items || []).map((it) => ({
           number: it.number,
@@ -165,13 +169,15 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
           html_url: it.html_url,
         }));
 
-      const buildQuery = (reviewerClause) =>
+      // Each search query carries the repo + state + ONE qualifier
+      // clause. Multi-value filters fan out into multiple queries and
+      // merge client-side, since GitHub's Search API can't OR these.
+      const buildQuery = (clause) =>
         [
           `repo:${owner}/${repo}`,
           `is:pr`,
           state !== "all" ? `state:${state}` : null,
-          author ? `author:${author}` : null,
-          reviewerClause,
+          clause,
         ]
           .filter(Boolean)
           .join(" ");
@@ -184,24 +190,59 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
         return normalize(data.items);
       };
 
-      let merged;
-      if (reviewer) {
-        // GitHub search can't OR `reviewed-by:` and `review-requested:` in one
-        // query, so make two parallel searches and union the results.
-        const [reviewedBy, requested] = await Promise.all([
-          runSearch(buildQuery(`reviewed-by:${reviewer}`)),
-          runSearch(buildQuery(`review-requested:${reviewer}`)),
-        ]);
-        const byNumber = new Map();
-        for (const pr of [...reviewedBy, ...requested]) {
-          if (!byNumber.has(pr.number)) byNumber.set(pr.number, pr);
+      // Map of PR number → PR object, populated by every query for dedup
+      const allByNumber = new Map();
+      const recordResult = (list, into) => {
+        for (const pr of list) {
+          if (!allByNumber.has(pr.number)) allByNumber.set(pr.number, pr);
+          into.add(pr.number);
         }
-        merged = [...byNumber.values()].sort(
-          (a, b) => new Date(b.updated_at) - new Date(a.updated_at)
-        );
-      } else {
-        merged = await runSearch(buildQuery(null));
+      };
+
+      // For each filter group, build the queries that represent its
+      // OR-of-qualifiers. Run them in parallel, union into a Set of PR
+      // numbers. Multiple groups intersect at the end.
+      const groupSets = [];
+
+      const runGroup = async (clauses) => {
+        const lists = await Promise.all(clauses.map((c) => runSearch(buildQuery(c))));
+        const set = new Set();
+        for (const list of lists) recordResult(list, set);
+        return set;
+      };
+
+      if (authors.length) {
+        groupSets.push(await runGroup(authors.map((a) => `author:${a}`)));
       }
+      if (reviewers.length) {
+        const clauses = [];
+        for (const r of reviewers) {
+          clauses.push(`reviewed-by:${r}`);
+          clauses.push(`review-requested:${r}`);
+        }
+        groupSets.push(await runGroup(clauses));
+      }
+      if (participants.length) {
+        const clauses = [];
+        for (const p of participants) {
+          clauses.push(`author:${p}`);
+          clauses.push(`reviewed-by:${p}`);
+          clauses.push(`review-requested:${p}`);
+        }
+        groupSets.push(await runGroup(clauses));
+      }
+
+      // Intersect the groups (AND) — a PR must satisfy every active group
+      let finalNumbers = groupSets[0] || new Set();
+      for (let i = 1; i < groupSets.length; i++) {
+        const next = groupSets[i];
+        finalNumbers = new Set([...finalNumbers].filter((n) => next.has(n)));
+      }
+
+      const merged = [...finalNumbers]
+        .map((n) => allByNumber.get(n))
+        .filter(Boolean)
+        .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
 
       return res.json(merged);
     }

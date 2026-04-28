@@ -81,17 +81,37 @@
             <button class="filter-btn" data-state="all">All</button>
           </div>
           <div class="filter-user-inputs">
-            <label class="filter-user-input">
-              <span>Author</span>
-              <input id="filter-author" type="text" list="user-suggestions"
-                placeholder="anyone" autocomplete="off" />
-            </label>
-            <label class="filter-user-input">
-              <span>Reviewer</span>
-              <input id="filter-reviewer" type="text" list="user-suggestions"
-                placeholder="anyone" autocomplete="off" />
-            </label>
-            <datalist id="user-suggestions"></datalist>
+            <div class="filter-multi" data-filter="authors">
+              <button type="button" class="filter-multi-btn">
+                Authors <span class="filter-badge" hidden></span>
+              </button>
+              <div class="filter-multi-popover" hidden>
+                <input class="filter-multi-search" type="search"
+                  placeholder="Filter users..." autocomplete="off" />
+                <div class="filter-multi-list"></div>
+              </div>
+            </div>
+            <div class="filter-multi" data-filter="reviewers">
+              <button type="button" class="filter-multi-btn">
+                Reviewers <span class="filter-badge" hidden></span>
+              </button>
+              <div class="filter-multi-popover" hidden>
+                <input class="filter-multi-search" type="search"
+                  placeholder="Filter users..." autocomplete="off" />
+                <div class="filter-multi-list"></div>
+              </div>
+            </div>
+            <div class="filter-multi" data-filter="participants"
+              title="Match PRs where the user is the author or a reviewer">
+              <button type="button" class="filter-multi-btn">
+                Participants <span class="filter-badge" hidden></span>
+              </button>
+              <div class="filter-multi-popover" hidden>
+                <input class="filter-multi-search" type="search"
+                  placeholder="Filter users..." autocomplete="off" />
+                <div class="filter-multi-list"></div>
+              </div>
+            </div>
           </div>
           <span id="pr-list-summary" class="muted"></span>
         </div>

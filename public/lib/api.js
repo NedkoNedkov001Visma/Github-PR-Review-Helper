@@ -13,13 +13,24 @@ export async function fetchRepoUsers(owner, repo) {
   return res.json();
 }
 
-export async function fetchPulls(owner, repo, state = "open", author = "", reviewer = "") {
+/**
+ * @param {string[]} authors      empty array = no filter
+ * @param {string[]} reviewers
+ * @param {string[]} participants
+ */
+export async function fetchPulls(
+  owner,
+  repo,
+  state = "open",
+  authors = [],
+  reviewers = [],
+  participants = []
+) {
   const params = new URLSearchParams({ state });
-  if (author) params.set("author", author);
-  if (reviewer) params.set("reviewer", reviewer);
-  const res = await fetch(
-    `/api/repos/${owner}/${repo}/pulls?${params}`
-  );
+  for (const a of authors) params.append("author", a);
+  for (const r of reviewers) params.append("reviewer", r);
+  for (const p of participants) params.append("participant", p);
+  const res = await fetch(`/api/repos/${owner}/${repo}/pulls?${params}`);
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || `Failed to fetch pulls: ${res.status}`);
