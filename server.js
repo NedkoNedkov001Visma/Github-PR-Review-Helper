@@ -108,6 +108,57 @@ async function ghGraphQL(query, variables, token) {
   return json.data;
 }
 
+/**
+ * Fetch every review thread on a PR via GraphQL (paginated). Returns a
+ * flat array of `{ id, isResolved, isOutdated, isCollapsed, commentDatabaseIds }`
+ * — `commentDatabaseIds` lets the client match REST review comments to
+ * their parent thread.
+ */
+async function fetchReviewThreads(owner, repo, number, token) {
+  const out = [];
+  let cursor = null;
+  // Cap at 20 pages (2000 threads) to be safe — extreme PRs are rare.
+  for (let i = 0; i < 20; i++) {
+    const query = `
+      query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            reviewThreads(first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                id
+                isResolved
+                isOutdated
+                isCollapsed
+                comments(first: 100) {
+                  nodes { databaseId }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+    const data = await ghGraphQL(query, { owner, repo, number, cursor }, token);
+    const conn = data.repository?.pullRequest?.reviewThreads;
+    if (!conn) break;
+    for (const node of conn.nodes || []) {
+      out.push({
+        id: node.id,
+        isResolved: !!node.isResolved,
+        isOutdated: !!node.isOutdated,
+        isCollapsed: !!node.isCollapsed,
+        commentDatabaseIds: (node.comments?.nodes || [])
+          .map((c) => c.databaseId)
+          .filter((x) => x != null),
+      });
+    }
+    if (!conn.pageInfo?.hasNextPage) break;
+    cursor = conn.pageInfo.endCursor;
+  }
+  return out;
+}
+
 // --- Read endpoints ---
 
 // Authenticated GitHub user — used by the UI to decide whether to show
@@ -152,7 +203,7 @@ app.get("/api/pr/:owner/:repo/:number", async (req, res) => {
     const token = getToken();
     const base = `/repos/${owner}/${repo}`;
 
-    const [prRes, issueComments, reviews, reviewComments, files, commits] =
+    const [prRes, issueComments, reviews, reviewComments, files, commits, reviewThreads] =
       await Promise.all([
         ghFetch(`${base}/pulls/${number}`, token),
         ghFetchAll(`${base}/issues/${number}/comments`, token),
@@ -160,6 +211,13 @@ app.get("/api/pr/:owner/:repo/:number", async (req, res) => {
         ghFetchAll(`${base}/pulls/${number}/comments`, token),
         ghFetchAll(`${base}/pulls/${number}/files`, token),
         ghFetchAll(`${base}/pulls/${number}/commits`, token),
+        // Review threads only exist in GraphQL — REST review-comments
+        // endpoint does not expose the parent thread's node id, which
+        // is what the resolve/unresolve mutations require.
+        fetchReviewThreads(owner, repo, Number(number), token).catch((err) => {
+          console.warn("Review thread fetch failed:", err.message);
+          return [];
+        }),
       ]);
 
     res.json({
@@ -169,6 +227,7 @@ app.get("/api/pr/:owner/:repo/:number", async (req, res) => {
       reviewComments,
       files,
       commits,
+      reviewThreads,
     });
   } catch (err) {
     console.error("Error fetching PR:", err.message);

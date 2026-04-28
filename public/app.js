@@ -539,13 +539,17 @@ async function loadPR(owner, repo, number, initialTab = null) {
       ensureCurrentUser(),
     ]);
     const timeline = buildTimeline(data);
-    const threadMap = groupReviewCommentThreads(data.reviewComments);
+    const threadMap = groupReviewCommentThreads(
+      data.reviewComments,
+      data.reviewThreads
+    );
     // Cache for modal previews of in-comment file diffs
     currentPRData = data;
     currentPRThreads = Array.from(threadMap.values());
     const { conversation, aiComments } = classifyTimeline(
       timeline,
-      data.reviewComments
+      data.reviewComments,
+      data.reviewThreads
     );
 
     // Render PR header (with Approve/Merge buttons + review-state badge)
@@ -648,6 +652,113 @@ async function handleMerge(btn, pr) {
     btn.disabled = false;
     btn.textContent = original;
   }
+}
+
+// --- Hover tooltip for the file tree ---
+//
+// Shows a cursor-following popover with the FULL filename or folder
+// path when the user hovers a row in the file tree. We avoid the
+// native `title` attribute because of its ~500ms delay — the popover
+// is instant.
+
+function initTreeHoverTooltip() {
+  const tip = document.createElement("div");
+  tip.id = "tree-hover-tooltip";
+  tip.hidden = true;
+  document.body.appendChild(tip);
+
+  // Small delay so quick mouse passes don't cause a flicker storm.
+  // Once the tooltip IS visible, it tracks the cursor with no delay
+  // and only the row-change is delayed for the next reveal.
+  const SHOW_DELAY_MS = 200;
+
+  let activeRow = null;
+  let pendingTimer = null;
+  let lastEvent = null;
+
+  const positionTip = (e) => {
+    // Cursor offset — appear just below-right of the pointer with a
+    // small gap. Clamp to the viewport so the tip never gets clipped.
+    const offsetX = 14;
+    const offsetY = 18;
+    const rect = tip.getBoundingClientRect();
+    let x = e.clientX + offsetX;
+    let y = e.clientY + offsetY;
+    if (x + rect.width > window.innerWidth - 8) {
+      x = e.clientX - rect.width - offsetX;
+    }
+    if (y + rect.height > window.innerHeight - 8) {
+      y = e.clientY - rect.height - offsetY;
+    }
+    tip.style.left = `${Math.max(8, x)}px`;
+    tip.style.top = `${Math.max(8, y)}px`;
+  };
+
+  const reveal = (row, e) => {
+    const fullPath =
+      row.dataset.treeFile || row.dataset.folderPath || "";
+    if (!fullPath) return;
+    tip.textContent = fullPath;
+    tip.hidden = false;
+    positionTip(e);
+  };
+
+  const cancelPending = () => {
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+    }
+  };
+
+  const scheduleShow = (row, e) => {
+    cancelPending();
+    activeRow = row;
+    lastEvent = e;
+    // Always wait for the delay before revealing — even when moving
+    // between rows. Hide any current tip so quick row-to-row passes
+    // don't show stale paths.
+    tip.hidden = true;
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      if (activeRow === row) reveal(row, lastEvent || e);
+    }, SHOW_DELAY_MS);
+  };
+
+  const hide = () => {
+    cancelPending();
+    tip.hidden = true;
+    activeRow = null;
+    lastEvent = null;
+  };
+
+  // Delegated to document so dynamically-rendered tree rows pick this up.
+  document.addEventListener("mouseover", (e) => {
+    const row = e.target.closest(".tree-file, .tree-folder");
+    if (row && row !== activeRow) {
+      scheduleShow(row, e);
+    } else if (!row && activeRow) {
+      hide();
+    }
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    lastEvent = e;
+    const stillIn = e.target.closest(".tree-file, .tree-folder");
+    if (!stillIn) {
+      if (activeRow) hide();
+      return;
+    }
+    if (stillIn !== activeRow) {
+      scheduleShow(stillIn, e);
+      return;
+    }
+    if (!tip.hidden) positionTip(e);
+  });
+
+  // Defensive: hide on scroll/blur — cursor may stop firing events
+  // while the page reflows.
+  window.addEventListener("scroll", hide, true);
+  window.addEventListener("blur", hide);
 }
 
 // --- File diff preview modal ---
@@ -1394,6 +1505,7 @@ function init() {
   initClearDataModal();
   initCommitPreviewModal();
   initFilePreviewModal();
+  initTreeHoverTooltip();
   renderRecentRepos();
 
   // When the browser tab becomes visible again, refresh actions data

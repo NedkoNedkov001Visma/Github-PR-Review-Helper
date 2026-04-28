@@ -1529,8 +1529,8 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
 }
 .file-tree {
   position: sticky;
-  top: 60px; /* sits below the sticky header */
-  max-height: calc(100vh - 80px);
+  top: 48px; /* sits directly under the 48px-tall site header */
+  max-height: calc(100vh - 64px);
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1586,9 +1586,9 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
 .tree-folder > .folder-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
-  padding: 4px 12px;
+  padding: 4px 6px;
   border: none;
   background: none;
   color: var(--fg);
@@ -1610,7 +1610,31 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
 .folder-name { flex: 1; word-break: break-all; }
 .folder-icon { font-size: 12px; opacity: 0.8; }
 
-.file-tree-list { padding-left: 14px; border-left: 1px solid var(--border-muted); margin-left: 16px; }
+/* Compact per-level indent — keeps long file paths readable in the
+   narrow tree column. Border + a small left padding hint at nesting
+   without burning ~30px per level. */
+.file-tree-list { padding-left: 6px; border-left: 1px solid var(--border-muted); margin-left: 6px; }
+
+/* Cursor-following tooltip showing the full file/folder path. Driven
+   by initTreeHoverTooltip() in app.js. */
+#tree-hover-tooltip {
+  position: fixed;
+  z-index: 400;
+  max-width: min(560px, 70vw);
+  padding: 6px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
 
 .tree-file {
   display: flex;
@@ -1703,7 +1727,7 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
 .tree-file-name:hover { color: var(--fg-accent); }
 .tree-file-stats { font-size: 11px; flex-shrink: 0; }
 
-.diff-content { min-width: 0; }
+.diff-column { min-width: 0; }
 .diff-content-header {
   display: flex;
   align-items: center;
@@ -1718,8 +1742,24 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
   font-weight: 600;
   flex-wrap: wrap;
   box-shadow: var(--shadow-sm);
+  /* Stick directly under the site header (48px tall) — using a smaller
+     offset like 60px leaves a 12px gap where scrolling file content
+     would peek through. */
+  position: sticky;
+  top: 48px;
+  z-index: 5;
 }
 .diff-content-count { color: var(--fg-muted); font-weight: 500; }
+
+/* Hide inline review-comment rows when the user toggles "Hide comments".
+   Driven by the .hide-diff-comments class on .diff-column. */
+.diff-column.hide-diff-comments .diff-comment-row { display: none; }
+/* Visual nudge that the toggle is currently active */
+.tree-action-btn.is-active {
+  background: var(--bg-subtle);
+  color: var(--fg-accent);
+  font-weight: 600;
+}
 
 /* === File diff (Files Changed tab) === */
 .diff-file { margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg); }

@@ -497,7 +497,13 @@ export function renderDiffPanel(containerId, files, reviewComments, threadMap, p
   tree.className = "file-tree";
 
   const content = document.createElement("div");
-  content.className = "diff-content";
+  // NB: name avoids `diff-content` which is already used per-cell inside
+  // the diff <table> (the "code content" td). Reusing it for the column
+  // wrapper would make CSS selectors collide.
+  content.className = "diff-column";
+  // Apply the persisted "hide comments" preference up-front so the
+  // first paint already has the right state.
+  if (loadHideDiffComments()) content.classList.add("hide-diff-comments");
 
   // Bulk-action header that sits above the file diffs
   const contentHeader = document.createElement("div");
@@ -583,6 +589,7 @@ export function renderDiffPanel(containerId, files, reviewComments, threadMap, p
     expandAllFiles,
     collapseAllFiles,
     setAllHidden,
+    contentEl: content,
   });
 
   // Build and render the file tree
@@ -666,6 +673,30 @@ function renderDiffContentHeader(container, files, api) {
   };
   updateHideLabel();
   actions.appendChild(hideBtn);
+
+  // Toggle: hide / show review-comment threads inlined in the diffs.
+  // Persisted globally so the preference survives reloads + PR switches.
+  if (api.contentEl) {
+    const commentsBtn = document.createElement("button");
+    commentsBtn.type = "button";
+    commentsBtn.className = "tree-action-btn";
+    const updateCommentsBtn = () => {
+      const hidden = api.contentEl.classList.contains("hide-diff-comments");
+      commentsBtn.textContent = hidden ? "Show comments" : "Hide comments";
+      commentsBtn.title = hidden
+        ? "Show inline review comments in file diffs"
+        : "Hide inline review comments in file diffs";
+      commentsBtn.classList.toggle("is-active", hidden);
+    };
+    updateCommentsBtn();
+    commentsBtn.addEventListener("click", () => {
+      const willHide = !api.contentEl.classList.contains("hide-diff-comments");
+      api.contentEl.classList.toggle("hide-diff-comments", willHide);
+      saveHideDiffComments(willHide);
+      updateCommentsBtn();
+    });
+    actions.appendChild(commentsBtn);
+  }
 }
 
 /** Render one .diff-file section. Pulled out so the tree and main loop stay clean. */
@@ -935,6 +966,8 @@ function renderFileTree(
     const li = document.createElement("li");
     li.className = "tree-folder";
     li.dataset.folderPath = folderPath;
+    // Full path lives in data-folder-path; the custom hover tooltip
+    // (initTreeHoverTooltip in app.js) reads it and shows a popover.
 
     const toggle = document.createElement("button");
     toggle.type = "button";
@@ -987,6 +1020,8 @@ function renderFileTree(
     const li = document.createElement("li");
     li.className = "tree-file";
     li.dataset.treeFile = file.filename;
+    // Full path lives in data-tree-file; the custom hover tooltip
+    // (initTreeHoverTooltip in app.js) reads it and shows a popover.
     if (hiddenFiles.has(file.filename)) li.classList.add("file-hidden");
 
     const vStatus = viewedStatus ? viewedStatus(file) : "unviewed";
@@ -1036,7 +1071,9 @@ function renderFileTree(
     nameBtn.type = "button";
     nameBtn.className = "tree-file-name";
     nameBtn.textContent = file.filename.split("/").pop();
-    nameBtn.title = file.filename;
+    // Full path is exposed via the row's data-tree-file attribute and
+    // shown by the custom hover tooltip — avoid stacking the native
+    // tooltip on top.
     nameBtn.addEventListener("click", () => {
       // Scroll to the file section and expand it
       const section = fileSections.get(file.filename);
@@ -1156,5 +1193,25 @@ function saveFileState(prInfo, state) {
     localStorage.setItem(key, JSON.stringify(state));
   } catch {
     /* quota exceeded or disabled — ignore */
+  }
+}
+
+// "Hide diff comments" preference is global (applies to every PR you
+// open) since reviewers usually have one consistent preference for
+// whether they want inline review threads in the way of code.
+const HIDE_COMMENTS_KEY = "pr-reviewer-hide-diff-comments";
+function loadHideDiffComments() {
+  try {
+    return localStorage.getItem(HIDE_COMMENTS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveHideDiffComments(on) {
+  try {
+    if (on) localStorage.setItem(HIDE_COMMENTS_KEY, "1");
+    else localStorage.removeItem(HIDE_COMMENTS_KEY);
+  } catch {
+    /* ignore */
   }
 }

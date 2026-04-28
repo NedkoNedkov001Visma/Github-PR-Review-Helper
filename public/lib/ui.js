@@ -849,26 +849,33 @@ export function renderReviewThread(thread, prInfo, seenCtx) {
   replyForm.appendChild(replyBtn);
   container.appendChild(replyForm);
 
-  // Resolve / Unresolve button
-  if (thread.root && thread.root.pull_request_review_id && thread.root.node_id) {
+  // Resolve / Unresolve button — needs the GraphQL THREAD node id
+  // (a `PullRequestReviewThread` ID, not a comment node id). The
+  // classifier attaches this from the GraphQL `reviewThreads` payload.
+  if (thread.threadNodeId) {
     const resolveBtn = el(
       "button",
       "btn-resolve",
       thread.isResolved ? "Unresolve" : "Resolve"
     );
     let resolved = !!thread.isResolved;
+    if (resolved) container.classList.add("thread-resolved");
 
     resolveBtn.addEventListener("click", async () => {
       resolveBtn.disabled = true;
       try {
         if (resolved) {
-          await unresolveThread(prInfo.owner, prInfo.repo, prInfo.number, thread.root.node_id);
+          await unresolveThread(prInfo.owner, prInfo.repo, prInfo.number, thread.threadNodeId);
           resolved = false;
+          thread.isResolved = false;
           resolveBtn.textContent = "Resolve";
+          container.classList.remove("thread-resolved");
         } else {
-          await resolveThread(prInfo.owner, prInfo.repo, prInfo.number, thread.root.node_id);
+          await resolveThread(prInfo.owner, prInfo.repo, prInfo.number, thread.threadNodeId);
           resolved = true;
+          thread.isResolved = true;
           resolveBtn.textContent = "Unresolve";
+          container.classList.add("thread-resolved");
         }
       } catch (err) {
         console.error("Resolve/unresolve failed:", err);

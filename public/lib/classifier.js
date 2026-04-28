@@ -39,10 +39,17 @@ export function isAIBot(login) {
  * Root comments are those whose `in_reply_to_id` is `null` / `undefined`.
  * Replies are attached to their root and sorted by `created_at` ascending.
  *
+ * If `reviewThreads` (from the GraphQL `reviewThreads` connection) is
+ * supplied, each grouped thread also gets:
+ *   - `threadNodeId`  — the GraphQL ID needed for resolve/unresolve mutations
+ *   - `isResolved`    — current resolved state from GitHub
+ *   - `isOutdated`    — whether the thread targets stale code
+ *
  * @param {Array} reviewComments - Raw review comments from the GitHub API.
- * @returns {Map<number, { root: Object, replies: Object[] }>}
+ * @param {Array} [reviewThreads]
+ * @returns {Map<number, { root: Object, replies: Object[], threadNodeId?: string, isResolved?: boolean, isOutdated?: boolean }>}
  */
-export function groupReviewCommentThreads(reviewComments) {
+export function groupReviewCommentThreads(reviewComments, reviewThreads) {
   /** @type {Map<number, { root: Object, replies: Object[] }>} */
   const threads = new Map();
 
@@ -68,6 +75,24 @@ export function groupReviewCommentThreads(reviewComments) {
     thread.replies.sort(
       (a, b) => new Date(a.created_at) - new Date(b.created_at),
     );
+  }
+
+  // Merge GraphQL thread metadata: match by any comment's databaseId.
+  if (Array.isArray(reviewThreads) && reviewThreads.length) {
+    for (const ghThread of reviewThreads) {
+      // Find the REST root whose id appears in the thread's comment list
+      let matched = null;
+      for (const dbId of ghThread.commentDatabaseIds || []) {
+        if (threads.has(dbId)) {
+          matched = threads.get(dbId);
+          break;
+        }
+      }
+      if (!matched) continue;
+      matched.threadNodeId = ghThread.id;
+      matched.isResolved = !!ghThread.isResolved;
+      matched.isOutdated = !!ghThread.isOutdated;
+    }
   }
 
   return threads;
@@ -97,12 +122,12 @@ function isThreadAIOnly(thread) {
  *        Raw review comments from the GitHub API (used for thread grouping).
  * @returns {{ conversation: Array, aiComments: Array }}
  */
-export function classifyTimeline(timeline, reviewComments) {
+export function classifyTimeline(timeline, reviewComments, reviewThreads) {
   const conversation = [];
   const aiComments = [];
 
   // Pre-group all review comment threads once.
-  const allThreads = groupReviewCommentThreads(reviewComments);
+  const allThreads = groupReviewCommentThreads(reviewComments, reviewThreads);
 
   for (const entry of timeline) {
     // ── Issue comments ──────────────────────────────────────────────────
