@@ -228,6 +228,7 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
           clauses.push(`author:${p}`);
           clauses.push(`reviewed-by:${p}`);
           clauses.push(`review-requested:${p}`);
+          clauses.push(`assignee:${p}`);
         }
         groupSets.push(await runGroup(clauses));
       }
