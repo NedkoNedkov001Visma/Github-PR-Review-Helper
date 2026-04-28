@@ -275,9 +275,21 @@ export function renderPRHeader(pr, containerId = "pr-header") {
     container.appendChild(crumb);
   }
 
-  // Title + number
+  // Title + number — number is a link to the PR on GitHub
   const heading = el("h2", "pr-title");
-  heading.textContent = `${pr.title} #${pr.number}`;
+  heading.appendChild(document.createTextNode(`${pr.title} `));
+  if (pr.html_url) {
+    const numberLink = document.createElement("a");
+    numberLink.href = pr.html_url;
+    numberLink.target = "_blank";
+    numberLink.rel = "noopener";
+    numberLink.className = "pr-number-link";
+    numberLink.textContent = `#${pr.number}`;
+    numberLink.title = "Open this PR on GitHub";
+    heading.appendChild(numberLink);
+  } else {
+    heading.appendChild(document.createTextNode(`#${pr.number}`));
+  }
   container.appendChild(heading);
 
   // State badge
@@ -725,11 +737,49 @@ export function renderTimeline(containerId, entries, prInfo) {
   const collapseCtx = prInfo ? getCollapseContext(prInfo) : null;
   const seenCtx = prInfo ? getSeenContext(prInfo) : null;
 
+  // Load global sort preference
+  const sortPref = loadSortPref();
+
   // Bulk-action header above the timeline
   const actionBar = el("div", "timeline-action-bar");
   const countLabel = el("span", "timeline-action-count");
   countLabel.textContent = `${entries.length} item${entries.length !== 1 ? "s" : ""}`;
   actionBar.appendChild(countLabel);
+
+  // Sort controls (field selector + direction toggle)
+  const sortGroup = el("div", "timeline-sort");
+  const sortLabel = el("span", "timeline-sort-label", "Sort:");
+  sortGroup.appendChild(sortLabel);
+  const sortSelect = document.createElement("select");
+  sortSelect.className = "timeline-sort-select";
+  for (const opt of [
+    { value: "time", label: "Time created" },
+    { value: "updated", label: "Last updated" },
+    { value: "author", label: "Author" },
+  ]) {
+    const o = document.createElement("option");
+    o.value = opt.value;
+    o.textContent = opt.label;
+    if (opt.value === sortPref.field) o.selected = true;
+    sortSelect.appendChild(o);
+  }
+  sortGroup.appendChild(sortSelect);
+
+  const dirBtn = document.createElement("button");
+  dirBtn.type = "button";
+  dirBtn.className = "timeline-sort-dir";
+  const updateDirBtn = () => {
+    if (sortPref.direction === "asc") {
+      dirBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.47 7.78a.75.75 0 0 1 0-1.06l4-4a.75.75 0 0 1 1.06 0l4 4a.75.75 0 0 1-1.06 1.06L8.75 4.81V12.75a.75.75 0 0 1-1.5 0V4.81L4.53 7.78a.75.75 0 0 1-1.06 0Z"/></svg>`;
+      dirBtn.title = "Ascending — click to switch to descending";
+    } else {
+      dirBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M12.53 8.22a.75.75 0 0 1 0 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.97V3.25a.75.75 0 0 1 1.5 0v7.94l2.72-2.97a.75.75 0 0 1 1.06 0Z"/></svg>`;
+      dirBtn.title = "Descending — click to switch to ascending";
+    }
+  };
+  updateDirBtn();
+  sortGroup.appendChild(dirBtn);
+  actionBar.appendChild(sortGroup);
 
   const actions = el("div", "file-tree-actions");
   const expandAllBtn = el("button", "tree-action-btn", "Expand all");
@@ -747,56 +797,80 @@ export function renderTimeline(containerId, entries, prInfo) {
   actionBar.appendChild(actions);
   container.appendChild(actionBar);
 
-  for (const entry of entries) {
-    let commentId = null;
-    switch (entry.type) {
-      case "issue_comment":
-        container.appendChild(renderIssueComment(entry.data, collapseCtx, seenCtx));
-        commentId = `ic-${entry.data.id}`;
-        break;
-      case "review":
-        container.appendChild(
-          renderReview(entry.data, entry.threads || [], prInfo, collapseCtx, seenCtx)
-        );
-        commentId = `rv-${entry.data.id}`;
-        break;
-      case "review_thread":
-        container.appendChild(
-          renderStandaloneThread(entry.data, entry.reviewMeta, prInfo, collapseCtx, seenCtx)
-        );
-        commentId = `st-${entry.data.root?.id}`;
-        break;
-      default:
-        break;
-    }
-    // Mark every rendered item as seen for future visits
-    if (commentId) seenCtx?.markSeen(commentId);
-  }
+  // Sub-container for the items, so re-sort can replace it without
+  // touching the action bar or the new-comment form.
+  const itemsContainer = el("div", "timeline-items");
+  container.appendChild(itemsContainer);
 
-  // Bubble "New" badges up: if any nested reply is new, the parent
-  // timeline item's own header also gets a badge so the activity is
-  // visible at the top level.
-  for (const parent of container.querySelectorAll(
-    ":scope > .timeline-item, :scope > .standalone-thread"
-  )) {
-    const ownHeader = parent.querySelector(
-      ":scope > .timeline-item-content > .comment-header, :scope > .standalone-thread-meta"
-    );
-    if (!ownHeader || ownHeader.querySelector(":scope > .new-comment-badge")) {
-      continue; // no header or already marked new
+  /** Render entries into itemsContainer based on the current sort. */
+  const renderEntries = () => {
+    itemsContainer.innerHTML = "";
+    const sorted = sortEntries(entries, sortPref);
+    for (const entry of sorted) {
+      let commentId = null;
+      switch (entry.type) {
+        case "issue_comment":
+          itemsContainer.appendChild(renderIssueComment(entry.data, collapseCtx, seenCtx));
+          commentId = `ic-${entry.data.id}`;
+          break;
+        case "review":
+          itemsContainer.appendChild(
+            renderReview(entry.data, entry.threads || [], prInfo, collapseCtx, seenCtx)
+          );
+          commentId = `rv-${entry.data.id}`;
+          break;
+        case "review_thread":
+          itemsContainer.appendChild(
+            renderStandaloneThread(entry.data, entry.reviewMeta, prInfo, collapseCtx, seenCtx)
+          );
+          commentId = `st-${entry.data.root?.id}`;
+          break;
+        default:
+          break;
+      }
+      if (commentId) seenCtx?.markSeen(commentId);
     }
-    if (parent.querySelector(".new-comment-badge")) {
-      const badge = el("span", "new-comment-badge", "New");
-      ownHeader.appendChild(badge);
+
+    // Bubble "New" badges up: if any nested reply is new, the parent
+    // timeline item's own header also gets a badge so the activity is
+    // visible at the top level.
+    for (const parent of itemsContainer.querySelectorAll(
+      ":scope > .timeline-item, :scope > .standalone-thread"
+    )) {
+      const ownHeader = parent.querySelector(
+        ":scope > .timeline-item-content > .comment-header, :scope > .standalone-thread-meta"
+      );
+      if (!ownHeader || ownHeader.querySelector(":scope > .new-comment-badge")) {
+        continue;
+      }
+      if (parent.querySelector(".new-comment-badge")) {
+        const badge = el("span", "new-comment-badge", "New");
+        ownHeader.appendChild(badge);
+      }
     }
-  }
+  };
+
+  renderEntries();
+
+  // Wire sort controls to re-render when the user changes them
+  sortSelect.addEventListener("change", () => {
+    sortPref.field = sortSelect.value;
+    saveSortPref(sortPref);
+    renderEntries();
+  });
+  dirBtn.addEventListener("click", () => {
+    sortPref.direction = sortPref.direction === "asc" ? "desc" : "asc";
+    saveSortPref(sortPref);
+    updateDirBtn();
+    renderEntries();
+  });
 
   // Persist the updated seen set (drops "New" badges on the next load)
   seenCtx?.save();
 
   // Bulk collapse / expand handlers — operate on this timeline's items
   expandAllBtn.addEventListener("click", () => {
-    for (const header of container.querySelectorAll(".collapsible-header.collapsed")) {
+    for (const header of itemsContainer.querySelectorAll(".collapsible-header.collapsed")) {
       header._setCollapsed?.(false);
       const idEl = header.closest("[data-comment-id]");
       if (idEl) collapseCtx?.collapsedComments.delete(idEl.dataset.commentId);
@@ -804,7 +878,7 @@ export function renderTimeline(containerId, entries, prInfo) {
     collapseCtx?.save();
   });
   collapseAllBtn.addEventListener("click", () => {
-    for (const header of container.querySelectorAll(
+    for (const header of itemsContainer.querySelectorAll(
       ".collapsible-header:not(.collapsed)"
     )) {
       header._setCollapsed?.(true);
@@ -815,7 +889,7 @@ export function renderTimeline(containerId, entries, prInfo) {
   });
   // Collapse everything EXCEPT items that carry the "New" badge
   collapseOldBtn.addEventListener("click", () => {
-    for (const header of container.querySelectorAll(
+    for (const header of itemsContainer.querySelectorAll(
       ".collapsible-header:not(.collapsed)"
     )) {
       const idEl = header.closest("[data-comment-id]");
@@ -850,8 +924,8 @@ export function renderTimeline(containerId, entries, prInfo) {
         prInfo.number,
         body
       );
-      // Insert the new comment right before the form
-      container.insertBefore(renderIssueComment(newComment), formWrap);
+      // Append the new comment to the items list
+      itemsContainer.appendChild(renderIssueComment(newComment, collapseCtx, seenCtx));
       textarea.value = "";
     } catch (err) {
       console.error("Comment failed:", err);
@@ -872,6 +946,110 @@ export function renderTimeline(containerId, entries, prInfo) {
 // ---------------------------------------------------------------------------
 // Mini diff hunk table (used inside review threads, Conversation + AI tabs)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Sort preference (global, applies to Conversation + AI Comments)
+// ---------------------------------------------------------------------------
+
+const SORT_KEY = "pr-reviewer-sort";
+
+function loadSortPref() {
+  try {
+    const raw = localStorage.getItem(SORT_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const field = ["time", "updated", "author"].includes(parsed.field)
+        ? parsed.field
+        : "time";
+      const direction = ["asc", "desc"].includes(parsed.direction) ? parsed.direction : "asc";
+      return { field, direction };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { field: "time", direction: "asc" };
+}
+
+function saveSortPref(pref) {
+  try {
+    localStorage.setItem(SORT_KEY, JSON.stringify(pref));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Pull a sortable author name out of a timeline entry. */
+function entryAuthor(entry) {
+  if (!entry) return "";
+  if (entry.type === "issue_comment" || entry.type === "review") {
+    return (entry.data?.user?.login || "").toLowerCase();
+  }
+  if (entry.type === "review_thread") {
+    return (entry.data?.root?.user?.login || entry.reviewMeta?.user?.login || "").toLowerCase();
+  }
+  return "";
+}
+
+/**
+ * Most-recent activity timestamp for an entry, including any nested replies.
+ * Used by the "Last updated" sort so a reply to an old thread bumps the
+ * whole entry to the top.
+ */
+function entryLastUpdatedMs(entry) {
+  const t = (s) => (s ? new Date(s).getTime() : 0);
+  let latest = t(entry?.timestamp);
+  if (!entry) return latest;
+  if (entry.type === "issue_comment") {
+    const c = entry.data || {};
+    latest = Math.max(latest, t(c.updated_at), t(c.created_at));
+    return latest;
+  }
+  if (entry.type === "review") {
+    const r = entry.data || {};
+    latest = Math.max(latest, t(r.submitted_at), t(r.updated_at), t(r.created_at));
+    for (const thread of entry.threads || []) {
+      const root = thread.root;
+      if (root) latest = Math.max(latest, t(root.updated_at), t(root.created_at));
+      for (const reply of thread.replies || []) {
+        latest = Math.max(latest, t(reply.updated_at), t(reply.created_at));
+      }
+    }
+    return latest;
+  }
+  if (entry.type === "review_thread") {
+    const root = entry.data?.root;
+    if (root) latest = Math.max(latest, t(root.updated_at), t(root.created_at));
+    for (const reply of entry.data?.replies || []) {
+      latest = Math.max(latest, t(reply.updated_at), t(reply.created_at));
+    }
+    return latest;
+  }
+  return latest;
+}
+
+/** Return a new array sorted by the given pref without mutating input. */
+function sortEntries(entries, pref) {
+  const dir = pref.direction === "desc" ? -1 : 1;
+  const copy = [...entries];
+  if (pref.field === "author") {
+    copy.sort((a, b) => {
+      const aa = entryAuthor(a);
+      const bb = entryAuthor(b);
+      if (aa === bb) {
+        // Tie-break by time (always ascending) so same-author items
+        // stay chronologically grouped
+        return new Date(a.timestamp) - new Date(b.timestamp);
+      }
+      return aa < bb ? -1 * dir : 1 * dir;
+    });
+  } else if (pref.field === "updated") {
+    copy.sort((a, b) => (entryLastUpdatedMs(a) - entryLastUpdatedMs(b)) * dir);
+  } else {
+    // field === "time" (created)
+    copy.sort((a, b) => (new Date(a.timestamp) - new Date(b.timestamp)) * dir);
+  }
+  return copy;
+}
 
 // ---------------------------------------------------------------------------
 // Per-PR collapsed-comment persistence
