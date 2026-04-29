@@ -298,6 +298,71 @@ function updateFilterBadge(filterDiv, kind) {
   }
 }
 
+// "Highlight new activity" toggle — always available; the per-card
+// check is just a localStorage read so iterating over a full list is
+// cheap (no API calls).
+const HIGHLIGHT_NEW_KEY = "pr-reviewer-highlight-new-activity";
+function loadHighlightNew() {
+  try {
+    return localStorage.getItem(HIGHLIGHT_NEW_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveHighlightNew(on) {
+  try {
+    if (on) localStorage.setItem(HIGHLIGHT_NEW_KEY, "1");
+    else localStorage.removeItem(HIGHLIGHT_NEW_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function prHasNewActivity(pr, owner, repo) {
+  if (!pr || !pr.updated_at) return false;
+  try {
+    const stored = localStorage.getItem(
+      `pr-reviewer-pr-last-visited:${owner}/${repo}/${pr.number}`
+    );
+    if (!stored) return false; // never visited → don't mark as "new"
+    return new Date(pr.updated_at) > new Date(stored);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Re-mark every PR card in the list with .pr-card-new-activity if the
+ * toggle is on AND the PR's updated_at is later than its stored
+ * last-visited timestamp.
+ */
+function applyNewActivityMarks() {
+  const cards = document.querySelectorAll("#pr-list .pr-card");
+  const on = loadHighlightNew();
+  for (const card of cards) {
+    const o = card.dataset.owner;
+    const r = card.dataset.repo;
+    const num = Number(card.dataset.prNumber);
+    if (!on || !o || !r || !num) {
+      card.classList.remove("pr-card-new-activity");
+      continue;
+    }
+    const updatedAt = card.dataset.updatedAt;
+    const stored = (() => {
+      try {
+        return localStorage.getItem(
+          `pr-reviewer-pr-last-visited:${o}/${r}/${num}`
+        );
+      } catch {
+        return null;
+      }
+    })();
+    const isNew =
+      stored && updatedAt && new Date(updatedAt) > new Date(stored);
+    card.classList.toggle("pr-card-new-activity", !!isNew);
+  }
+}
+
 function renderUserSuggestions() {
   // Re-render all three filter popovers from `knownUsers`.
   document.querySelectorAll(".filter-multi").forEach((filterDiv) => {
@@ -405,6 +470,17 @@ function initFilterButtons() {
     });
   });
 
+  // Highlight-new-activity toggle: persist + apply marks immediately
+  // when checked. Always visible — applies to every PR in the list.
+  const hlCb = document.getElementById("highlight-new-activity-cb");
+  if (hlCb) {
+    hlCb.checked = loadHighlightNew();
+    hlCb.addEventListener("change", () => {
+      saveHighlightNew(hlCb.checked);
+      applyNewActivityMarks();
+    });
+  }
+
   // Outside click closes any open popover (and applies pending changes).
   document.addEventListener("click", (e) => {
     if (e.target.closest(".filter-multi")) return;
@@ -426,9 +502,9 @@ function renderCurrentRepoHeader(owner, repo) {
       <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" class="repo-icon">
         <path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"></path>
       </svg>
-      <a href="https://github.com/${encodeURIComponent(owner)}" target="_blank" rel="noopener" class="repo-owner">${escapeHtml(owner)}</a>
+      <a href="#repo=${encodeURIComponent(owner + "/" + repo)}" class="repo-owner" title="Back to ${escapeHtml(owner + "/" + repo)} PRs">${escapeHtml(owner)}</a>
       <span class="repo-sep">/</span>
-      <a href="https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}" target="_blank" rel="noopener" class="repo-name">${escapeHtml(repo)}</a>
+      <a href="#repo=${encodeURIComponent(owner + "/" + repo)}" class="repo-name" title="Back to ${escapeHtml(owner + "/" + repo)} PRs">${escapeHtml(repo)}</a>
       <a href="https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}" target="_blank" rel="noopener" class="repo-external-link" title="Open on GitHub">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"></path></svg>
       </a>
@@ -454,6 +530,12 @@ function renderPRList(pulls, owner, repo) {
   for (const pr of pulls) {
     const card = document.createElement("div");
     card.className = "pr-card";
+    // Stamp metadata used by the "Highlight new activity" toggle so we
+    // can re-evaluate marks without holding onto the pulls array.
+    card.dataset.owner = owner;
+    card.dataset.repo = repo;
+    card.dataset.prNumber = String(pr.number);
+    if (pr.updated_at) card.dataset.updatedAt = pr.updated_at;
 
     const stateIcon = pr.merged_at
       ? `<svg class="pr-icon merged" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8-9a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM4.25 4a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"></path></svg>`
@@ -512,6 +594,9 @@ function renderPRList(pulls, owner, repo) {
     card.addEventListener("click", () => navigateToPR(owner, repo, pr.number));
     container.appendChild(card);
   }
+
+  // Re-apply per-card highlighting if the toggle is on.
+  applyNewActivityMarks();
 }
 
 // --- PR loading ---
@@ -557,7 +642,7 @@ async function loadPR(owner, repo, number, initialTab = null) {
       reviews: data.reviews || [],
       currentUser: user,
       onApprove: (btn) => handleApprove(btn),
-      onMerge: (btn) => handleMerge(btn, data.pr),
+      onMerge: (btn, method) => handleMerge(btn, data.pr, method),
     });
 
     // Render tabs
@@ -596,6 +681,20 @@ async function loadPR(owner, repo, number, initialTab = null) {
     history.replaceState(null, "", `#${owner}/${repo}/${number}/${tabToShow}`);
     document.title = `#${number} ${data.pr.title} - PR Reviewer`;
 
+    // Stamp this PR as visited at the snapshot's `updated_at`. The
+    // PR-list "Highlight new activity" toggle compares this to the
+    // current `updated_at` to detect changes since this visit.
+    try {
+      if (data.pr.updated_at) {
+        localStorage.setItem(
+          `pr-reviewer-pr-last-visited:${owner}/${repo}/${number}`,
+          data.pr.updated_at
+        );
+      }
+    } catch {
+      /* ignore quota errors */
+    }
+
     // Fetch Actions data in the background (doesn't block PR view)
     loadActionsForCurrentPR();
     startActionsAutoRefresh();
@@ -627,13 +726,17 @@ async function handleApprove(btn) {
   }
 }
 
-async function handleMerge(btn, pr) {
+async function handleMerge(btn, pr, method = "merge") {
   if (!currentPR) return;
-  // Default to "merge" commit; the user can extend later if they want
-  // squash/rebase to be selectable.
+  const METHOD_VERB = {
+    merge: "Create merge commit",
+    squash: "Squash and merge",
+    rebase: "Rebase and merge",
+  };
+  const verb = METHOD_VERB[method] || "Merge";
   if (
     !confirm(
-      `Merge "${pr.title}" into ${pr.base?.ref || "the base branch"}?`
+      `${verb}? "${pr.title}" → ${pr.base?.ref || "the base branch"}`
     )
   ) {
     return;
@@ -643,7 +746,7 @@ async function handleMerge(btn, pr) {
   btn.textContent = "Merging...";
   try {
     await mergePR(currentPR.owner, currentPR.repo, currentPR.number, {
-      merge_method: "merge",
+      merge_method: method,
     });
     showToast("Merged", "success");
     await loadPR(currentPR.owner, currentPR.repo, currentPR.number);
@@ -1238,14 +1341,20 @@ function handleHash() {
   if (match) {
     const [, owner, repo, number, tab] = match;
     const wantedTab = KNOWN_TABS.includes(tab) ? tab : null;
-    // If the PR is already loaded and we're only switching tabs, don't
-    // reload PR data — just switch the tab.
+    // If the PR is already loaded, skip the network roundtrip — but
+    // still re-show the PR panel and hide the index/commit panels.
+    // (Without this, browser-forward from the PR list back to the PR
+    // would change the URL but leave the index visible.)
     if (
       currentPR &&
       currentPR.owner === owner &&
       currentPR.repo === repo &&
       currentPR.number === number
     ) {
+      document.getElementById("index-panel").hidden = true;
+      const commitPanel = document.getElementById("commit-panel");
+      if (commitPanel) commitPanel.hidden = true;
+      document.getElementById("pr-panel").hidden = false;
       if (wantedTab) showTab(wantedTab);
       return;
     }

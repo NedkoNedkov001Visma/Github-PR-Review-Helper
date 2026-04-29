@@ -340,12 +340,14 @@ export function renderPRHeader(pr, containerId = "pr-header", opts = {}) {
     const [owner, repo] = repoFull.split("/");
     const crumb = el("div", "pr-breadcrumb");
 
+    // Owner navigates to the in-app PR list for this repo (we don't
+    // have an owner-level page, and jumping out to github.com from
+    // here is rarely what the user wants).
     const ownerLink = document.createElement("a");
-    ownerLink.href = `https://github.com/${owner}`;
-    ownerLink.target = "_blank";
-    ownerLink.rel = "noopener";
+    ownerLink.href = `#repo=${encodeURIComponent(repoFull)}`;
     ownerLink.className = "breadcrumb-link";
     ownerLink.textContent = owner;
+    ownerLink.title = `Back to ${repoFull} PRs`;
     crumb.appendChild(ownerLink);
 
     crumb.appendChild(document.createTextNode(" / "));
@@ -507,15 +509,10 @@ export function renderPRHeader(pr, containerId = "pr-header", opts = {}) {
       actions.appendChild(approveBtn);
     }
 
-    // Merge button — enabled only when the PR has at least one approval
-    // and no outstanding "Changes requested" review. We trust GitHub's
-    // own mergeability flags as a secondary gate, but the UI gate here
-    // is "is approved by a reviewer?" per the user's request.
-    const mergeBtn = document.createElement("button");
-    mergeBtn.type = "button";
-    mergeBtn.className = "pr-action-btn pr-action-merge";
-    mergeBtn.appendChild(mergeIcon());
-    mergeBtn.appendChild(document.createTextNode("Merge"));
+    // Merge: split button. Main click uses the last-chosen method for
+    // this repo (default: "merge"). Caret opens a popover with the three
+    // GitHub-supported methods so the user can pick another — useful
+    // when the repo doesn't allow merge commits, only squash/rebase.
     let mergeDisabledReason = null;
     if (!approval.isApproved) {
       mergeDisabledReason = approval.hasChangesRequested
@@ -526,12 +523,102 @@ export function renderPRHeader(pr, containerId = "pr-header", opts = {}) {
     } else if (pr.draft) {
       mergeDisabledReason = "PR is in draft";
     }
-    mergeBtn.disabled = !!mergeDisabledReason;
-    mergeBtn.title = mergeDisabledReason || "Merge this PR";
-    mergeBtn.addEventListener("click", () => {
-      if (typeof opts.onMerge === "function") opts.onMerge(mergeBtn);
+
+    const repoFull = pr.base?.repo?.full_name || "";
+    const methodKey = `pr-reviewer-merge-method:${repoFull}`;
+    const allowedMethods = ["merge", "squash", "rebase"];
+    let savedMethod = "merge";
+    try {
+      const v = localStorage.getItem(methodKey);
+      if (allowedMethods.includes(v)) savedMethod = v;
+    } catch {
+      /* ignore */
+    }
+
+    const METHOD_LABELS = {
+      merge: "Create merge commit",
+      squash: "Squash and merge",
+      rebase: "Rebase and merge",
+    };
+    const SHORT_LABELS = {
+      merge: "Merge",
+      squash: "Squash",
+      rebase: "Rebase",
+    };
+
+    const wrap = el("div", "pr-action-merge-wrap");
+    const mainBtn = document.createElement("button");
+    mainBtn.type = "button";
+    mainBtn.className = "pr-action-btn pr-action-merge pr-action-merge-main";
+    mainBtn.appendChild(mergeIcon());
+    const mainLabel = document.createTextNode(SHORT_LABELS[savedMethod]);
+    mainBtn.appendChild(mainLabel);
+    mainBtn.disabled = !!mergeDisabledReason;
+    mainBtn.title = mergeDisabledReason
+      ? mergeDisabledReason
+      : METHOD_LABELS[savedMethod];
+
+    // Caret is always clickable — even when merge is blocked, the user
+    // should be able to pre-select their preferred method.
+    const caretBtn = document.createElement("button");
+    caretBtn.type = "button";
+    caretBtn.className = "pr-action-btn pr-action-merge pr-action-merge-caret";
+    caretBtn.title = "Choose a merge method";
+    caretBtn.setAttribute("aria-label", "Choose a merge method");
+    caretBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.78 6.22a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L3.22 7.28a.749.749 0 1 1 1.06-1.06L8 9.94l3.72-3.72a.749.749 0 0 1 1.06 0Z"></path></svg>`;
+
+    const menu = el("div", "pr-action-merge-menu");
+    menu.hidden = true;
+    for (const m of allowedMethods) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "pr-action-merge-menu-item";
+      item.dataset.method = m;
+      item.textContent = METHOD_LABELS[m];
+      item.addEventListener("click", () => {
+        savedMethod = m;
+        try { localStorage.setItem(methodKey, m); } catch { /* ignore */ }
+        mainLabel.textContent = SHORT_LABELS[m];
+        mainBtn.title = mergeDisabledReason || METHOD_LABELS[m];
+        menu.hidden = true;
+        wrap.classList.remove("is-open");
+        // Only fire the merge when the main button isn't blocked —
+        // otherwise the click is just "save preference" so the user
+        // can pre-pick before approval comes in.
+        if (!mergeDisabledReason && typeof opts.onMerge === "function") {
+          opts.onMerge(mainBtn, m);
+        }
+      });
+      menu.appendChild(item);
+    }
+
+    mainBtn.addEventListener("click", () => {
+      if (typeof opts.onMerge === "function") opts.onMerge(mainBtn, savedMethod);
     });
-    actions.appendChild(mergeBtn);
+    caretBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = menu.hidden;
+      menu.hidden = !willOpen;
+      wrap.classList.toggle("is-open", willOpen);
+    });
+    // Click outside / Escape to dismiss
+    document.addEventListener("click", (e) => {
+      if (!menu.hidden && !wrap.contains(e.target)) {
+        menu.hidden = true;
+        wrap.classList.remove("is-open");
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !menu.hidden) {
+        menu.hidden = true;
+        wrap.classList.remove("is-open");
+      }
+    });
+
+    wrap.appendChild(mainBtn);
+    wrap.appendChild(caretBtn);
+    wrap.appendChild(menu);
+    actions.appendChild(wrap);
 
     container.appendChild(actions);
   }

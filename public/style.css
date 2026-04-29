@@ -356,6 +356,43 @@ header {
 .filter-user-input input:focus { border-color: var(--fg-accent); box-shadow: 0 0 0 3px rgba(9,105,218,0.15); }
 #pr-list-summary { margin-left: auto; }
 
+/* "Highlight new activity" toggle — sits in the filter row, only
+   shown while a Participant filter is active. */
+.highlight-new-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+.highlight-new-toggle input { margin: 0; cursor: pointer; accent-color: var(--fg-accent); }
+
+/* PR cards with new activity since the user's last visit. Soft tint +
+   "New" badge anchored top-right. */
+.pr-card.pr-card-new-activity {
+  background: var(--new-tint, var(--bg));
+  border-color: color-mix(in srgb, var(--fg-accent) 35%, var(--border));
+}
+.pr-card.pr-card-new-activity::after {
+  content: "New";
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--fg-accent);
+  color: #fff;
+  pointer-events: none;
+}
+.pr-card { position: relative; }
+
 /* Multi-select user filters on the index page */
 .filter-multi { position: relative; }
 .filter-multi-btn {
@@ -711,6 +748,57 @@ header {
   background: color-mix(in srgb, var(--merged) 88%, black);
   border-color: color-mix(in srgb, var(--merged) 88%, black);
 }
+
+/* Split button: main "Merge" + caret dropdown for picking the method */
+.pr-action-merge-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.pr-action-merge-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-right: 0;
+}
+.pr-action-merge-caret {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left-width: 0;
+  padding: 6px 8px;
+  margin-left: 0;
+}
+.pr-action-merge-caret svg { display: block; transition: transform var(--transition); }
+.pr-action-merge-wrap.is-open .pr-action-merge-caret svg { transform: rotate(180deg); }
+
+.pr-action-merge-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+}
+.pr-action-merge-menu-item {
+  display: block;
+  text-align: left;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  cursor: pointer;
+  transition: background var(--transition);
+  white-space: nowrap;
+}
+.pr-action-merge-menu-item:hover { background: var(--bg-subtle); color: var(--fg-accent); }
 
 /* === Commits panel === */
 #panel-commits .commits-empty {
