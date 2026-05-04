@@ -378,8 +378,10 @@ function statusLabel(status) {
  * @param {object} file              GitHub PR file object (filename, patch, status, additions, deletions, sha)
  * @param {Object[]} [threads]       All review-comment threads for the PR.
  * @param {object} [opts]
- * @param {string} [opts.highlightThreadId]  If provided, the row containing
- *                                           this thread is flashed and scrolled to.
+ * @param {string} [opts.highlightThreadId]  If provided, only this thread
+ *   is rendered inline (every other thread on the file is hidden) and the
+ *   matching row is scrolled to + flashed. Keeps the preview focused on
+ *   the comment that triggered it.
  * @returns {HTMLElement}
  */
 export function renderFilePreview(file, threads = [], opts = {}) {
@@ -416,8 +418,19 @@ export function renderFilePreview(file, threads = [], opts = {}) {
     return wrap;
   }
 
+  // When the preview was triggered from a specific comment, scope the
+  // inline threads to JUST that one — other comments on this file are
+  // visual noise in this context.
+  let threadsToRender = threads;
+  if (opts.highlightThreadId != null) {
+    const targetId = String(opts.highlightThreadId);
+    threadsToRender = (threads || []).filter(
+      (t) => t.root && String(t.root.id) === targetId
+    );
+  }
+
   const hunks = parsePatch(file.patch);
-  const commentMap = buildCommentPositionMap(threads, file.filename);
+  const commentMap = buildCommentPositionMap(threadsToRender, file.filename);
   const table = renderDiffTable(hunks, commentMap);
 
   // Wrap the table so the header stays pinned and only the diff scrolls.
