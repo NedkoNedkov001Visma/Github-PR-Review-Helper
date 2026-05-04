@@ -1,3 +1,45 @@
+// --- Reactions ---
+
+/** kind: "issue" | "review" */
+export async function fetchReactions(owner, repo, number, kind, commentId) {
+  const res = await fetch(
+    `/api/pr/${owner}/${repo}/${number}/comments/${kind}/${commentId}/reactions`
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to fetch reactions");
+  }
+  return res.json();
+}
+
+export async function addReaction(owner, repo, number, kind, commentId, content) {
+  const res = await fetch(
+    `/api/pr/${owner}/${repo}/${number}/comments/${kind}/${commentId}/reactions`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    }
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to add reaction");
+  }
+  return res.json();
+}
+
+export async function removeReaction(owner, repo, number, kind, commentId, reactionId) {
+  const res = await fetch(
+    `/api/pr/${owner}/${repo}/${number}/comments/${kind}/${commentId}/reactions/${reactionId}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to remove reaction");
+  }
+  return res.json();
+}
+
 export async function fetchCommit(owner, repo, sha) {
   const res = await fetch(`/api/repos/${owner}/${repo}/commits/${sha}`);
   if (!res.ok) {

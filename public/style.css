@@ -1133,6 +1133,125 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
   border-radius: 20px;
 }
 
+/* === Reaction bar (GitHub emoji reactions on comments) === */
+.reaction-bar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-muted, var(--border));
+}
+.reaction-bar.reaction-busy { opacity: 0.6; pointer-events: none; }
+
+.reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--fg);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+  line-height: 1.4;
+}
+.reaction-chip:hover {
+  border-color: var(--fg-accent);
+  color: var(--fg-accent);
+}
+/* Highlight reactions placed by the current GitHub user (driven by
+   GraphQL `viewerHasReacted`). Filled tint + accent border. */
+.reaction-chip.is-mine {
+  background: color-mix(in srgb, var(--fg-accent) 12%, var(--bg));
+  border-color: var(--fg-accent);
+  color: var(--fg-accent);
+  font-weight: 600;
+}
+.reaction-chip.is-mine:hover {
+  background: color-mix(in srgb, var(--fg-accent) 20%, var(--bg));
+}
+.reaction-emoji { font-size: 14px; line-height: 1; }
+.reaction-count { font-weight: 600; }
+
+.reaction-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: 1px dashed transparent;
+  border-radius: 20px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.reaction-add-btn:hover {
+  border-color: var(--border);
+  color: var(--fg);
+  background: var(--bg-subtle);
+}
+.reaction-add-btn svg { display: block; }
+
+.reaction-picker {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+}
+.reaction-picker-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  transition: background var(--transition), transform var(--transition);
+}
+.reaction-picker-item:hover {
+  background: var(--bg-subtle);
+  transform: scale(1.1);
+}
+
+/* "New" pill on a tab when there's content the user hasn't seen yet.
+   Driven by app.js setTabNew() — present only when a tab actually has
+   new items. */
+.tab-new-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: var(--fg-accent);
+  color: #fff;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+#tab-nav button.tab-has-new { color: var(--fg); }
+
 /* === Tab panels === */
 [role="tabpanel"] {
   background: var(--bg);

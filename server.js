@@ -159,6 +159,104 @@ async function fetchReviewThreads(owner, repo, number, token) {
   return out;
 }
 
+/**
+ * Fetch which reactions the *authenticated* user has placed on every
+ * comment of a PR — returns a Map<databaseId, string[]> mapping comment
+ * databaseId → array of reaction `content` values the viewer reacted with.
+ *
+ * Uses GraphQL so it's a couple of paginated queries instead of one
+ * REST request per comment. `viewerHasReacted` is the magic field.
+ */
+async function fetchViewerReactions(owner, repo, number, token) {
+  const result = new Map();
+
+  // Issue comments — paginated
+  let cursor = null;
+  for (let i = 0; i < 20; i++) {
+    const data = await ghGraphQL(
+      `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            comments(first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                databaseId
+                reactionGroups { content viewerHasReacted }
+              }
+            }
+          }
+        }
+      }`,
+      { owner, repo, number, cursor },
+      token
+    );
+    const conn = data.repository?.pullRequest?.comments;
+    if (!conn) break;
+    for (const node of conn.nodes || []) {
+      if (node.databaseId == null) continue;
+      const mine = (node.reactionGroups || [])
+        .filter((g) => g.viewerHasReacted)
+        .map((g) => GQL_TO_REST_CONTENT[g.content] || g.content);
+      result.set(node.databaseId, mine);
+    }
+    if (!conn.pageInfo?.hasNextPage) break;
+    cursor = conn.pageInfo.endCursor;
+  }
+
+  // Review-line comments via reviewThreads.comments — also paginated
+  let threadCursor = null;
+  for (let i = 0; i < 20; i++) {
+    const data = await ghGraphQL(
+      `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            reviewThreads(first: 50, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                comments(first: 100) {
+                  nodes {
+                    databaseId
+                    reactionGroups { content viewerHasReacted }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }`,
+      { owner, repo, number, cursor: threadCursor },
+      token
+    );
+    const conn = data.repository?.pullRequest?.reviewThreads;
+    if (!conn) break;
+    for (const thread of conn.nodes || []) {
+      for (const c of thread.comments?.nodes || []) {
+        if (c.databaseId == null) continue;
+        const mine = (c.reactionGroups || [])
+          .filter((g) => g.viewerHasReacted)
+          .map((g) => GQL_TO_REST_CONTENT[g.content] || g.content);
+        result.set(c.databaseId, mine);
+      }
+    }
+    if (!conn.pageInfo?.hasNextPage) break;
+    threadCursor = conn.pageInfo.endCursor;
+  }
+
+  return result;
+}
+
+// GraphQL uses ENUM values like THUMBS_UP, REST uses "+1". Map between them.
+const GQL_TO_REST_CONTENT = {
+  THUMBS_UP: "+1",
+  THUMBS_DOWN: "-1",
+  LAUGH: "laugh",
+  HOORAY: "hooray",
+  CONFUSED: "confused",
+  HEART: "heart",
+  ROCKET: "rocket",
+  EYES: "eyes",
+};
+
 // --- Read endpoints ---
 
 // Authenticated GitHub user — used by the UI to decide whether to show
@@ -203,22 +301,45 @@ app.get("/api/pr/:owner/:repo/:number", async (req, res) => {
     const token = getToken();
     const base = `/repos/${owner}/${repo}`;
 
-    const [prRes, issueComments, reviews, reviewComments, files, commits, reviewThreads] =
-      await Promise.all([
-        ghFetch(`${base}/pulls/${number}`, token),
-        ghFetchAll(`${base}/issues/${number}/comments`, token),
-        ghFetchAll(`${base}/pulls/${number}/reviews`, token),
-        ghFetchAll(`${base}/pulls/${number}/comments`, token),
-        ghFetchAll(`${base}/pulls/${number}/files`, token),
-        ghFetchAll(`${base}/pulls/${number}/commits`, token),
-        // Review threads only exist in GraphQL — REST review-comments
-        // endpoint does not expose the parent thread's node id, which
-        // is what the resolve/unresolve mutations require.
-        fetchReviewThreads(owner, repo, Number(number), token).catch((err) => {
-          console.warn("Review thread fetch failed:", err.message);
-          return [];
-        }),
-      ]);
+    const [
+      prRes,
+      issueComments,
+      reviews,
+      reviewComments,
+      files,
+      commits,
+      reviewThreads,
+      viewerReactionsMap,
+    ] = await Promise.all([
+      ghFetch(`${base}/pulls/${number}`, token),
+      ghFetchAll(`${base}/issues/${number}/comments`, token),
+      ghFetchAll(`${base}/pulls/${number}/reviews`, token),
+      ghFetchAll(`${base}/pulls/${number}/comments`, token),
+      ghFetchAll(`${base}/pulls/${number}/files`, token),
+      ghFetchAll(`${base}/pulls/${number}/commits`, token),
+      // Review threads only exist in GraphQL — REST review-comments
+      // endpoint does not expose the parent thread's node id, which
+      // is what the resolve/unresolve mutations require.
+      fetchReviewThreads(owner, repo, Number(number), token).catch((err) => {
+        console.warn("Review thread fetch failed:", err.message);
+        return [];
+      }),
+      // viewerHasReacted per comment — purely UI sugar (highlights chips
+      // the current user has reacted with), so a soft fail is fine.
+      fetchViewerReactions(owner, repo, Number(number), token).catch((err) => {
+        console.warn("Viewer reactions fetch failed:", err.message);
+        return new Map();
+      }),
+    ]);
+
+    // Merge `viewerReactions` (string[] of reaction contents) onto each
+    // comment by databaseId so the client doesn't need a parallel lookup.
+    for (const c of issueComments) {
+      c.viewerReactions = viewerReactionsMap.get(c.id) || [];
+    }
+    for (const c of reviewComments) {
+      c.viewerReactions = viewerReactionsMap.get(c.id) || [];
+    }
 
     res.json({
       pr: prRes.data,
@@ -504,6 +625,118 @@ app.put("/api/pr/:owner/:repo/:number/merge", async (req, res) => {
     res.status(err.status || 500).json({ error: err.message });
   }
 });
+
+// --- Reactions (emoji reactions on issue comments + review comments) ---
+//
+// GitHub exposes the same shape for both, but at different URLs:
+//   issue comments  → /repos/{o}/{r}/issues/comments/{id}/reactions
+//   review comments → /repos/{o}/{r}/pulls/comments/{id}/reactions
+//
+// Allowed `content` values: "+1", "-1", "laugh", "confused", "heart",
+// "hooray", "rocket", "eyes".
+
+const ALLOWED_REACTIONS = new Set([
+  "+1",
+  "-1",
+  "laugh",
+  "confused",
+  "heart",
+  "hooray",
+  "rocket",
+  "eyes",
+]);
+
+function buildReactionsBase(kind, owner, repo, id) {
+  if (kind === "issue") {
+    return `/repos/${owner}/${repo}/issues/comments/${id}/reactions`;
+  }
+  return `/repos/${owner}/${repo}/pulls/comments/${id}/reactions`;
+}
+
+// List all reactions on a comment — used by the client when toggling a
+// reaction chip so it knows which `id` to DELETE for the current user.
+app.get(
+  "/api/pr/:owner/:repo/:number/comments/:kind/:id/reactions",
+  async (req, res) => {
+    try {
+      const { owner, repo, kind, id } = req.params;
+      if (kind !== "issue" && kind !== "review") {
+        return res.status(400).json({ error: "kind must be 'issue' or 'review'" });
+      }
+      const token = getToken();
+      const data = await ghFetchAll(
+        buildReactionsBase(kind, owner, repo, id),
+        token
+      );
+      res.json(data);
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+);
+
+// Add a reaction. Body: { content }. GitHub returns the existing
+// reaction if the user already reacted with that content (200 vs 201)
+// — we just pass through whatever it sends back.
+app.post(
+  "/api/pr/:owner/:repo/:number/comments/:kind/:id/reactions",
+  async (req, res) => {
+    try {
+      const { owner, repo, kind, id } = req.params;
+      if (kind !== "issue" && kind !== "review") {
+        return res.status(400).json({ error: "kind must be 'issue' or 'review'" });
+      }
+      const content = req.body?.content;
+      if (!ALLOWED_REACTIONS.has(content)) {
+        return res.status(400).json({ error: `Invalid reaction content: ${content}` });
+      }
+      const token = getToken();
+      const { data } = await ghFetch(
+        buildReactionsBase(kind, owner, repo, id),
+        token,
+        { method: "POST", body: JSON.stringify({ content }) }
+      );
+      res.json(data);
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+);
+
+// Remove a reaction by its id (different from the comment id).
+app.delete(
+  "/api/pr/:owner/:repo/:number/comments/:kind/:id/reactions/:reactionId",
+  async (req, res) => {
+    try {
+      const { owner, repo, kind, id, reactionId } = req.params;
+      if (kind !== "issue" && kind !== "review") {
+        return res.status(400).json({ error: "kind must be 'issue' or 'review'" });
+      }
+      const token = getToken();
+      const url = `${GH_API}${buildReactionsBase(kind, owner, repo, id)}/${reactionId}`;
+      const r = await fetch(url, {
+        method: "DELETE",
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: "application/vnd.github.v3+json",
+        },
+      });
+      if (r.status === 401) {
+        clearToken();
+        throw new Error("GitHub token expired or invalid");
+      }
+      if (!r.ok && r.status !== 204) {
+        const body = await r.text();
+        const err = new Error(`GitHub API ${r.status}: ${body}`);
+        err.status = r.status;
+        throw err;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+);
 
 // --- Actions (GitHub Actions workflow runs + check runs) ---
 

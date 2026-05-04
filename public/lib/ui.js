@@ -3,8 +3,199 @@ import {
   replyToReviewComment,
   resolveThread,
   unresolveThread,
+  fetchReactions,
+  addReaction,
+  removeReaction,
 } from "./api.js";
 import { parsePatch } from "./diff-renderer.js";
+
+// Mapping between GitHub's reaction `content` strings and the emojis
+// they represent. The picker shows them in this exact order.
+const REACTION_EMOJI = {
+  "+1": "\u{1F44D}",
+  "-1": "\u{1F44E}",
+  laugh: "\u{1F604}",
+  hooray: "\u{1F389}",
+  confused: "\u{1F615}",
+  heart: "\u2764\uFE0F",
+  rocket: "\u{1F680}",
+  eyes: "\u{1F440}",
+};
+const REACTION_ORDER = [
+  "+1",
+  "-1",
+  "laugh",
+  "hooray",
+  "confused",
+  "heart",
+  "rocket",
+  "eyes",
+];
+
+/**
+ * Render the reaction bar that hangs under a comment body.
+ *
+ * `commentObj.reactions` already carries per-content totals from the
+ * REST response; we use those for first paint. Toggling a reaction
+ * fetches the full list to find the current user's reaction id, then
+ * either DELETEs it or POSTs a new one.
+ *
+ * @param {object} commentObj   The raw GitHub comment object.
+ * @param {"issue"|"review"} kind
+ * @param {object} prInfo       { owner, repo, number }
+ * @returns {HTMLElement}
+ */
+function renderReactionBar(commentObj, kind, prInfo) {
+  const bar = el("div", "reaction-bar");
+  const reactions = commentObj.reactions || {};
+
+  // Mutable counts + Set of reactions the viewer has placed. Both are
+  // updated optimistically when the user toggles, so we don't need to
+  // refetch the comment to see the new state.
+  const counts = {};
+  for (const c of REACTION_ORDER) counts[c] = reactions[c] || 0;
+  const mine = new Set(commentObj.viewerReactions || []);
+
+  // Render existing chips (only those with count > 0). Always-rendered
+  // "+ react" button at the end opens the picker.
+  const renderChips = () => {
+    bar.innerHTML = "";
+    for (const content of REACTION_ORDER) {
+      const n = counts[content] || 0;
+      if (n <= 0) continue;
+      const chip = el("button", "reaction-chip");
+      chip.type = "button";
+      chip.dataset.reactionContent = content;
+      const isMine = mine.has(content);
+      if (isMine) chip.classList.add("is-mine");
+      chip.title = isMine
+        ? `Remove your ${REACTION_TITLE(content)} reaction`
+        : `${REACTION_TITLE(content)} (click to react)`;
+      chip.innerHTML = `<span class="reaction-emoji">${REACTION_EMOJI[content]}</span><span class="reaction-count">${n}</span>`;
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleReaction(content, chip);
+      });
+      bar.appendChild(chip);
+    }
+
+    const addBtn = el("button", "reaction-add-btn");
+    addBtn.type = "button";
+    addBtn.title = "Add a reaction";
+    addBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0Zm0 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm-2.25 8a.75.75 0 0 1 1.5 0c0 .69.56 1.25 1.25 1.25.69 0 1.25-.56 1.25-1.25a.75.75 0 0 1 1.5 0 2.75 2.75 0 1 1-5.5 0Zm.75-3.75a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5Zm3.5 0a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5Z"/></svg>`;
+    addBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      togglePicker(addBtn);
+    });
+    bar.appendChild(addBtn);
+  };
+
+  const togglePicker = (anchorBtn) => {
+    let picker = bar.querySelector(":scope > .reaction-picker");
+    if (picker) {
+      picker.remove();
+      return;
+    }
+    picker = el("div", "reaction-picker");
+    for (const content of REACTION_ORDER) {
+      const opt = el("button", "reaction-picker-item");
+      opt.type = "button";
+      opt.dataset.reactionContent = content;
+      opt.title = REACTION_TITLE(content);
+      opt.textContent = REACTION_EMOJI[content];
+      opt.addEventListener("click", (e) => {
+        e.stopPropagation();
+        picker.remove();
+        toggleReaction(content, null);
+      });
+      picker.appendChild(opt);
+    }
+    bar.appendChild(picker);
+
+    // Outside click closes
+    const onDoc = (e) => {
+      if (!picker) return;
+      if (e.target === anchorBtn) return;
+      if (!picker.contains(e.target)) {
+        picker.remove();
+        document.removeEventListener("click", onDoc);
+      }
+    };
+    setTimeout(() => document.addEventListener("click", onDoc), 0);
+  };
+
+  const toggleReaction = async (content, _chipEl) => {
+    if (!prInfo) return;
+    bar.classList.add("reaction-busy");
+    try {
+      if (mine.has(content)) {
+        // We need the reaction's own id to DELETE it. Fetch the list
+        // and look up our own entry. Only happens on remove, not add.
+        const list = await fetchReactions(
+          prInfo.owner,
+          prInfo.repo,
+          prInfo.number,
+          kind,
+          commentObj.id
+        );
+        const me = window.__prReviewerCurrentUser?.login;
+        const found = list.find(
+          (r) => r.content === content && (!me || r.user?.login === me)
+        );
+        if (!found) {
+          // Server says we never reacted — sync and bail
+          mine.delete(content);
+          renderChips();
+          return;
+        }
+        await removeReaction(
+          prInfo.owner,
+          prInfo.repo,
+          prInfo.number,
+          kind,
+          commentObj.id,
+          found.id
+        );
+        mine.delete(content);
+        counts[content] = Math.max(0, (counts[content] || 0) - 1);
+      } else {
+        await addReaction(
+          prInfo.owner,
+          prInfo.repo,
+          prInfo.number,
+          kind,
+          commentObj.id,
+          content
+        );
+        mine.add(content);
+        counts[content] = (counts[content] || 0) + 1;
+      }
+      renderChips();
+    } catch (err) {
+      console.error("Reaction toggle failed:", err);
+      alert("Reaction failed: " + err.message);
+    } finally {
+      bar.classList.remove("reaction-busy");
+    }
+  };
+
+  renderChips();
+  return bar;
+}
+
+function REACTION_TITLE(content) {
+  switch (content) {
+    case "+1": return "Thumbs up";
+    case "-1": return "Thumbs down";
+    case "laugh": return "Laugh";
+    case "hooray": return "Hooray";
+    case "confused": return "Confused";
+    case "heart": return "Heart";
+    case "rocket": return "Rocket";
+    case "eyes": return "Eyes";
+    default: return content;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Markdown rendering (regex-based GFM subset)
@@ -727,6 +918,10 @@ export function renderIssueComment(comment, collapseCtx, seenCtx, prInfo = null)
   const inner = el("div", "comment-body-inner");
   inner.innerHTML = renderMarkdown(comment.body, { repoCtx: prInfo });
   body.appendChild(inner);
+  // Reaction bar — toggle GitHub reactions on this issue comment
+  if (prInfo) {
+    body.appendChild(renderReactionBar(comment, "issue", prInfo));
+  }
   content.appendChild(body);
 
   makeCollapsible(header, {
@@ -1847,6 +2042,10 @@ function buildCommentBlock(comment, seenCtx, prInfo = null) {
   const inner = el("div", "comment-body-inner");
   inner.innerHTML = renderMarkdown(comment.body, { repoCtx: prInfo });
   body.appendChild(inner);
+  // Reaction bar — toggle GitHub reactions on this review comment
+  if (prInfo) {
+    body.appendChild(renderReactionBar(comment, "review", prInfo));
+  }
   block.appendChild(body);
 
   // Mark this individual comment as seen for next visit

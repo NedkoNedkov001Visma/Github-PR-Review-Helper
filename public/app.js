@@ -41,6 +41,9 @@ async function ensureCurrentUser() {
   } catch {
     currentUser = null; // App keeps working without it; just no Approve button
   }
+  // Expose for ui.js — the reaction bar uses this to decide whether
+  // a click should add or remove the user's own reaction.
+  window.__prReviewerCurrentUser = currentUser;
   return currentUser;
 }
 
@@ -98,6 +101,72 @@ function clearError() {
 const RECENT_KEY = "pr-reviewer-recent-repos";
 let currentRepo = null; // { owner, repo }
 let currentFilter = "open";
+
+// ---------------------------------------------------------------------------
+// Filter <-> URL hash serialization
+//
+// Hash format: `#repo=owner%2Frepo&state=open&author=alice&author=bob...`
+// Multiple filter values use repeated keys (URLSearchParams handles that).
+// `state` is omitted when it equals the default "open".
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the URL hash for the index PR-list view from the current
+ * filter state. `repoFull` is required (no point in storing filters
+ * without the repo they apply to).
+ */
+function serializeRepoFilterHash(repoFull) {
+  const params = new URLSearchParams();
+  params.set("repo", repoFull);
+  if (currentFilter && currentFilter !== "open") {
+    params.set("state", currentFilter);
+  }
+  for (const a of userFilterSelections.authors) params.append("author", a);
+  for (const r of userFilterSelections.reviewers) params.append("reviewer", r);
+  for (const p of userFilterSelections.participants) params.append("participant", p);
+  return `#${params.toString()}`;
+}
+
+/**
+ * Parse the params out of an index hash.
+ * Accepts the legacy form `#repo=owner/repo` (no `&` follow-on) too.
+ *
+ * @returns {null | {
+ *   repoFull: string,
+ *   state: string,
+ *   authors: string[],
+ *   reviewers: string[],
+ *   participants: string[],
+ * }}
+ */
+function parseRepoFilterHash(hash) {
+  if (!hash || !hash.startsWith("repo=")) return null;
+  const params = new URLSearchParams(hash);
+  const repoFull = params.get("repo");
+  if (!repoFull) return null;
+  const stateRaw = params.get("state");
+  const allowedStates = new Set(["open", "closed", "all"]);
+  return {
+    repoFull,
+    state: allowedStates.has(stateRaw) ? stateRaw : "open",
+    authors: params.getAll("author"),
+    reviewers: params.getAll("reviewer"),
+    participants: params.getAll("participant"),
+  };
+}
+
+/**
+ * Push the current filter state into the URL hash without triggering
+ * the hashchange listener (which would re-load the PR list redundantly).
+ * Called from filter-change handlers as well as from loadRepoPRs.
+ */
+function syncUrlToCurrentFilters() {
+  if (!currentRepo) return;
+  const repoFull = `${currentRepo.owner}/${currentRepo.repo}`;
+  const next = serializeRepoFilterHash(repoFull);
+  if ("#" + location.hash.slice(1) === next) return; // no-op
+  history.replaceState(null, "", next);
+}
 
 // User suggestions for the filter dropdowns
 const knownUsers = new Map(); // login -> { login, avatar_url }
@@ -175,6 +244,9 @@ async function loadRepoPRs(repoStr, state) {
   }
   currentRepo = { owner, repo };
   if (state) currentFilter = state;
+  // Reflect the (possibly newly-set) filters in the URL so a refresh
+  // restores them. Uses replaceState so this doesn't pollute history.
+  syncUrlToCurrentFilters();
   clearError();
   setLoading(true);
 
@@ -680,6 +752,11 @@ async function loadPR(owner, repo, number, initialTab = null) {
     // the initial Conversation default.
     history.replaceState(null, "", `#${owner}/${repo}/${number}/${tabToShow}`);
     document.title = `#${number} ${data.pr.title} - PR Reviewer`;
+
+    // Mark tabs that have new content. Must run BEFORE we stamp the
+    // last-visited timestamp below, so the commits check compares
+    // against the PREVIOUS visit's snapshot.
+    updateTabNewIndicators(data);
 
     // Stamp this PR as visited at the snapshot's `updated_at`. The
     // PR-list "Highlight new activity" toggle compares this to the
@@ -1289,6 +1366,98 @@ const KNOWN_TABS = [
   "actions",
 ];
 
+/**
+ * Stamp/clear a "New (n)" badge on a tab button.
+ *
+ * - `count > 0`  → badge shows ("New" or "N new"), `tab-has-new` class on
+ * - `count == 0` → badge removed, class cleared
+ *
+ * Called from updateTabNewIndicators after the panels render.
+ */
+function setTabNew(tab, count) {
+  const btn = document.querySelector(`[role='tab'][data-tab="${tab}"]`);
+  if (!btn) return;
+  let badge = btn.querySelector(".tab-new-badge");
+  if (count > 0) {
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "tab-new-badge";
+      btn.appendChild(badge);
+    }
+    badge.textContent = count > 1 ? `${count} new` : "New";
+    badge.title = `${count} new ${count === 1 ? "item" : "items"} since your last visit`;
+    btn.classList.add("tab-has-new");
+  } else {
+    if (badge) badge.remove();
+    btn.classList.remove("tab-has-new");
+  }
+}
+
+/**
+ * Walk the just-rendered panels and tag each tab with a "New" badge if
+ * there's content the user hasn't seen yet.
+ *
+ * - Conversation / AI Comments: count of `.new-comment-badge` placed by
+ *   ui.js based on the per-PR `seen-comments` set
+ * - Files Changed: count of files marked `file-changed-since-viewed`
+ *   (the file's sha changed after the user last marked it viewed)
+ * - Commits: count of commits authored after the PR's stored
+ *   last-visited timestamp (the same one used by the PR-list highlight)
+ *
+ * The Actions tab is intentionally excluded — workflow runs are too
+ * dynamic to mark "new" usefully.
+ */
+function updateTabNewIndicators(data) {
+  // Conversation
+  const convPanel = document.getElementById("panel-conversation");
+  setTabNew(
+    "conversation",
+    convPanel
+      ? convPanel.querySelectorAll(".new-comment-badge").length
+      : 0
+  );
+
+  // AI Comments
+  const aiPanel = document.getElementById("panel-ai-comments");
+  setTabNew(
+    "ai-comments",
+    aiPanel ? aiPanel.querySelectorAll(".new-comment-badge").length : 0
+  );
+
+  // Files Changed — count distinct files (one badge per .diff-file is enough)
+  const filesPanel = document.getElementById("panel-files-changed");
+  setTabNew(
+    "files-changed",
+    filesPanel
+      ? filesPanel.querySelectorAll(
+          ".diff-file.file-changed-since-viewed"
+        ).length
+      : 0
+  );
+
+  // Commits — anything authored after the last-visited timestamp
+  let newCommits = 0;
+  if (currentPR && Array.isArray(data?.commits) && data.commits.length) {
+    let lastVisited = null;
+    try {
+      lastVisited = localStorage.getItem(
+        `pr-reviewer-pr-last-visited:${currentPR.owner}/${currentPR.repo}/${currentPR.number}`
+      );
+    } catch {
+      /* ignore */
+    }
+    if (lastVisited) {
+      const stamp = new Date(lastVisited).getTime();
+      for (const c of data.commits) {
+        const d = c.commit?.author?.date || c.commit?.committer?.date;
+        if (d && new Date(d).getTime() > stamp) newCommits++;
+      }
+    }
+    // First-ever visit: leave the badge off, same convention as comments.
+  }
+  setTabNew("commits", newCommits);
+}
+
 function initTabs() {
   document.getElementById("tab-nav").addEventListener("click", (e) => {
     const btn = e.target.closest("[role='tab']");
@@ -1317,16 +1486,32 @@ function handleHash() {
     document.title = "PR Reviewer";
     return;
   }
-  // Repo hash: #repo=owner/repo → show PR list for that repo
-  const repoMatch = hash.match(/^repo=(.+)$/);
-  if (repoMatch) {
+  // Repo hash: #repo=owner/repo&state=...&author=... → show PR list
+  // for that repo with the encoded filters restored.
+  if (hash.startsWith("repo=")) {
     document.getElementById("pr-panel").hidden = true;
     const commitPanel = document.getElementById("commit-panel");
     if (commitPanel) commitPanel.hidden = true;
     document.getElementById("index-panel").hidden = false;
-    const repoStr = decodeURIComponent(repoMatch[1]);
-    document.getElementById("repo-input").value = repoStr;
-    loadRepoPRs(repoStr);
+    const parsed = parseRepoFilterHash(hash);
+    if (parsed) {
+      // Restore filter state in memory + UI before kicking the load
+      currentFilter = parsed.state;
+      userFilterSelections.authors = new Set(parsed.authors);
+      userFilterSelections.reviewers = new Set(parsed.reviewers);
+      userFilterSelections.participants = new Set(parsed.participants);
+      // Reflect the chosen state on the toggle group
+      document.querySelectorAll(".filter-btn").forEach((b) => {
+        b.classList.toggle("active", b.dataset.state === currentFilter);
+      });
+      // Refresh popover badges so the count chips match
+      document.querySelectorAll(".filter-multi").forEach((d) => {
+        const kind = d.dataset.filter;
+        if (userFilterSelections[kind]) updateFilterBadge(d, kind);
+      });
+      document.getElementById("repo-input").value = parsed.repoFull;
+      loadRepoPRs(parsed.repoFull, currentFilter);
+    }
     return;
   }
   // Commit hash: owner/repo/commit/<sha>
