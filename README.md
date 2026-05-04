@@ -41,6 +41,12 @@ it hard to spot the comments that actually need your attention. This app:
   **New** badge and a soft accent tint. Cards you've never opened
   aren't marked, so the first time you flip it on you don't drown in
   badges. Comparison is local (no API calls), state is global.
+- **Filters live in the URL hash** — `#repo=owner%2Frepo&state=closed
+  &author=alice&author=bob&reviewer=carol&participant=dave`. Refresh
+  the page and your filter selections, state choice, and the list
+  itself all come back exactly as they were. Bookmark a hash to
+  share a filtered view, or use browser back/forward across filter
+  changes.
 - Recent repositories remembered across sessions as one-click chips
 - PR cards show title, labels, author avatar, requested-reviewer avatars,
   comment count, and updated-at
@@ -85,6 +91,12 @@ it hard to spot the comments that actually need your attention. This app:
   review threads — all from the app
 - **Resolve / unresolve actually works** — uses GitHub's GraphQL mutation
   with the right `PullRequestReviewThread` node ID
+- **Emoji reactions** on every comment (👍 👎 😄 🎉 😕 ❤️ 🚀 👀):
+  click an existing chip to toggle, or use the `+` button to open a
+  picker. Reactions you placed are highlighted with a tinted "is-mine"
+  pill — the server batch-fetches `viewerHasReacted` via GraphQL so
+  the highlighting is correct on first paint without per-comment
+  network calls.
 - **Resolved threads collapse by default**; the summary row keeps the
   file path + a "Resolved" pill + comment count visible. Click anywhere
   on the summary (or the chevron) to expand. Resolving via the button
@@ -183,6 +195,12 @@ it hard to spot the comments that actually need your attention. This app:
 - **Active tab is persisted** so first-load defaults match your last view
 - **Highlight new items**: subtle blue tint on new comments and on
   files that have changed since you marked them viewed
+- **"New" badges on the PR-view tabs** themselves — Conversation,
+  AI Comments, Commits, and Files Changed each show a small accent
+  pill ("N new") when there's content you haven't seen since your
+  last visit. Counts come from already-rendered DOM signals (per-comment
+  `seen-comments` set, file-changed-since-viewed marks, commits
+  authored after the last-visited stamp) — no extra API calls.
 - **Clear data** modal lists every category of locally-stored data
   (recent repos, theme, per-PR UI state) with per-category checkboxes
 - "Bubble-up": if a nested review reply is new, the parent review also
