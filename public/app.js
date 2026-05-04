@@ -230,6 +230,11 @@ function getUserFilters() {
   };
 }
 
+// Pagination state for the index PR list. Reset on every fresh load.
+let currentPage = 1;
+let currentHasMore = false;
+let loadedPulls = [];
+
 async function loadRepoPRs(repoStr, state) {
   const parsed = parseRepoInput(repoStr);
   if (!parsed) {
@@ -244,6 +249,10 @@ async function loadRepoPRs(repoStr, state) {
   }
   currentRepo = { owner, repo };
   if (state) currentFilter = state;
+  // Reset pagination on every fresh list load
+  currentPage = 1;
+  currentHasMore = false;
+  loadedPulls = [];
   // Reflect the (possibly newly-set) filters in the URL so a refresh
   // restores them. Uses replaceState so this doesn't pollute history.
   syncUrlToCurrentFilters();
@@ -252,17 +261,22 @@ async function loadRepoPRs(repoStr, state) {
 
   try {
     const { authors, reviewers, participants } = getUserFilters();
-    const pulls = await fetchPulls(
+    const resp = await fetchPulls(
       owner,
       repo,
       currentFilter,
       authors,
       reviewers,
-      participants
+      participants,
+      currentPage
     );
+    const pulls = resp.items || [];
+    currentHasMore = !!resp.hasMore;
+    loadedPulls = pulls;
     saveRecentRepo(owner, repo);
     document.getElementById("pr-list-controls").hidden = false;
     renderPRList(pulls, owner, repo);
+    renderLoadMoreFooter(owner, repo);
     // Populate suggestions: from PR authors + separate contributors fetch
     updateUserSuggestions(owner, repo, pulls);
   } catch (err) {
@@ -270,6 +284,71 @@ async function loadRepoPRs(repoStr, state) {
   } finally {
     setLoading(false);
   }
+}
+
+/**
+ * Fetch the next page and append its PRs to the current list.
+ * Used by the "Load more" footer button — only available on the
+ * unfiltered path (filter results come back exhaustively in one shot).
+ */
+async function loadMoreRepoPRs() {
+  if (!currentRepo || !currentHasMore) return;
+  const { owner, repo } = currentRepo;
+  const footerBtn = document.querySelector(".load-more-btn");
+  if (footerBtn) {
+    footerBtn.disabled = true;
+    footerBtn.textContent = "Loading...";
+  }
+  clearError();
+  try {
+    const { authors, reviewers, participants } = getUserFilters();
+    const resp = await fetchPulls(
+      owner,
+      repo,
+      currentFilter,
+      authors,
+      reviewers,
+      participants,
+      currentPage + 1
+    );
+    const pulls = resp.items || [];
+    currentHasMore = !!resp.hasMore;
+    currentPage += 1;
+    loadedPulls = loadedPulls.concat(pulls);
+    appendPRCards(pulls, owner, repo);
+    renderLoadMoreFooter(owner, repo);
+    // Refresh user suggestions with anyone newly visible
+    updateUserSuggestions(owner, repo, loadedPulls);
+  } catch (err) {
+    showError(err.message);
+    if (footerBtn) {
+      footerBtn.disabled = false;
+      footerBtn.textContent = "Load more";
+    }
+  }
+}
+
+/**
+ * Inject (or refresh) the "Load more" footer below the PR list.
+ * - Removed when no more pages exist (`currentHasMore === false`)
+ * - Otherwise shows a button + a "X loaded" caption
+ */
+function renderLoadMoreFooter(owner, repo) {
+  const list = document.getElementById("pr-list");
+  // Drop any previous footer first so we don't stack them
+  const existing = document.getElementById("pr-list-footer");
+  if (existing) existing.remove();
+  if (!currentHasMore) return;
+  const footer = document.createElement("div");
+  footer.id = "pr-list-footer";
+  footer.innerHTML = `
+    <button type="button" class="load-more-btn">Load more</button>
+    <span class="load-more-caption muted">${loadedPulls.length} loaded</span>
+  `;
+  footer
+    .querySelector(".load-more-btn")
+    .addEventListener("click", () => loadMoreRepoPRs());
+  list.parentNode.insertBefore(footer, list.nextSibling);
 }
 
 async function updateUserSuggestions(owner, repo, pulls) {
@@ -584,11 +663,18 @@ function renderCurrentRepoHeader(owner, repo) {
   `;
 }
 
+function updatePRListSummary() {
+  const summary = document.getElementById("pr-list-summary");
+  if (!summary) return;
+  const n = loadedPulls.length;
+  const more = currentHasMore ? "+" : "";
+  summary.textContent = `${n}${more} pull request${n !== 1 ? "s" : ""}`;
+}
+
 function renderPRList(pulls, owner, repo) {
   renderCurrentRepoHeader(owner, repo);
   const container = document.getElementById("pr-list");
-  const summary = document.getElementById("pr-list-summary");
-  summary.textContent = `${pulls.length} pull request${pulls.length !== 1 ? "s" : ""}`;
+  updatePRListSummary();
 
   if (pulls.length === 0) {
     container.innerHTML = `<div class="empty-state">
@@ -600,14 +686,32 @@ function renderPRList(pulls, owner, repo) {
 
   container.innerHTML = "";
   for (const pr of pulls) {
-    const card = document.createElement("div");
-    card.className = "pr-card";
-    // Stamp metadata used by the "Highlight new activity" toggle so we
-    // can re-evaluate marks without holding onto the pulls array.
-    card.dataset.owner = owner;
-    card.dataset.repo = repo;
-    card.dataset.prNumber = String(pr.number);
-    if (pr.updated_at) card.dataset.updatedAt = pr.updated_at;
+    container.appendChild(buildPRCard(pr, owner, repo));
+  }
+
+  applyNewActivityMarks();
+}
+
+/** Append more pulls to the existing list (used by Load more). */
+function appendPRCards(pulls, owner, repo) {
+  const container = document.getElementById("pr-list");
+  if (!container) return;
+  for (const pr of pulls) {
+    container.appendChild(buildPRCard(pr, owner, repo));
+  }
+  updatePRListSummary();
+  applyNewActivityMarks();
+}
+
+function buildPRCard(pr, owner, repo) {
+  const card = document.createElement("div");
+  card.className = "pr-card";
+  // Stamp metadata used by the "Highlight new activity" toggle so we
+  // can re-evaluate marks without holding onto the pulls array.
+  card.dataset.owner = owner;
+  card.dataset.repo = repo;
+  card.dataset.prNumber = String(pr.number);
+  if (pr.updated_at) card.dataset.updatedAt = pr.updated_at;
 
     const stateIcon = pr.merged_at
       ? `<svg class="pr-icon merged" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8-9a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM4.25 4a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"></path></svg>`
@@ -663,12 +767,8 @@ function renderPRList(pulls, owner, repo) {
       </div>
     `;
 
-    card.addEventListener("click", () => navigateToPR(owner, repo, pr.number));
-    container.appendChild(card);
-  }
-
-  // Re-apply per-card highlighting if the toggle is on.
-  applyNewActivityMarks();
+  card.addEventListener("click", () => navigateToPR(owner, repo, pr.number));
+  return card;
 }
 
 // --- PR loading ---

@@ -47,6 +47,15 @@ it hard to spot the comments that actually need your attention. This app:
   itself all come back exactly as they were. Bookmark a hash to
   share a filtered view, or use browser back/forward across filter
   changes.
+- **Paginated PR list** — first page loads 100 PRs (GitHub's
+  per-call max). A **Load more** button appears below the list when
+  more pages exist; click it to append the next 100 without
+  re-rendering the cards already on screen. The summary line shows
+  `"100+ pull requests"` while there's still more to fetch and
+  `"N loaded"` next to the button. Filtered queries are exhausted
+  in one round-trip (up to GitHub's 1000-result Search API cap), so
+  no Load more button is shown for filtered views — what you see is
+  the whole filtered set.
 - Recent repositories remembered across sessions as one-click chips
 - PR cards show title, labels, author avatar, requested-reviewer avatars,
   comment count, and updated-at

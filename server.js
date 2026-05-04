@@ -360,8 +360,10 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
   try {
     const { owner, repo } = req.params;
     const state = req.query.state || "open";
-    const perPage = Math.min(parseInt(req.query.per_page) || 50, 100);
-    const page = parseInt(req.query.page) || 1;
+    // Default to GitHub's max page size (100). Client can request fewer
+    // for testing, but never more than the API allows.
+    const perPage = Math.min(parseInt(req.query.per_page) || 100, 100);
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
     const toArr = (v) =>
       (Array.isArray(v) ? v : v ? [v] : [])
         .map((s) => String(s).trim())
@@ -400,12 +402,23 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
           .filter(Boolean)
           .join(" ");
 
-      const runSearch = async (q) => {
-        const { data } = await ghFetch(
-          `/search/issues?q=${encodeURIComponent(q)}&per_page=${perPage}&page=${page}&sort=updated&order=desc`,
-          token
-        );
-        return normalize(data.items);
+      // Page through ALL results of a single search query (Search API
+      // hard-caps at 1000 results / 10 pages of 100). Pagination across
+      // OR + intersect groups is semantically tricky to do incrementally,
+      // so we exhaust each underlying query and let the client see the
+      // full filtered set in one shot. Filter results are usually small.
+      const runSearchAll = async (q) => {
+        const out = [];
+        for (let p = 1; p <= 10; p++) {
+          const { data } = await ghFetch(
+            `/search/issues?q=${encodeURIComponent(q)}&per_page=100&page=${p}&sort=updated&order=desc`,
+            token
+          );
+          const items = normalize(data.items);
+          out.push(...items);
+          if (items.length < 100) break;
+        }
+        return out;
       };
 
       // Map of PR number → PR object, populated by every query for dedup
@@ -423,7 +436,7 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
       const groupSets = [];
 
       const runGroup = async (clauses) => {
-        const lists = await Promise.all(clauses.map((c) => runSearch(buildQuery(c))));
+        const lists = await Promise.all(clauses.map((c) => runSearchAll(buildQuery(c))));
         const set = new Set();
         for (const list of lists) recordResult(list, set);
         return set;
@@ -463,15 +476,34 @@ app.get("/api/repos/:owner/:repo/pulls", async (req, res) => {
         .filter(Boolean)
         .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
 
-      return res.json(merged);
+      // Filtered path returns everything at once — `hasMore` is always
+      // false to signal the client there's nothing more to fetch.
+      return res.json({ items: merged, hasMore: false });
     }
 
-    // No user filters — use the faster /pulls endpoint
-    const { data } = await ghFetch(
-      `/repos/${owner}/${repo}/pulls?state=${state}&per_page=${perPage}&page=${page}&sort=updated&direction=desc`,
-      token
-    );
-    res.json(data);
+    // No user filters — use the faster /pulls endpoint, paginated.
+    // Read the Link header to know whether more pages exist on GitHub.
+    const url = `${GH_API}/repos/${owner}/${repo}/pulls?state=${state}&per_page=${perPage}&page=${page}&sort=updated&direction=desc`;
+    const r = await fetch(url, {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: "application/vnd.github.v3+json",
+      },
+    });
+    if (r.status === 401) {
+      clearToken();
+      throw new Error("GitHub token expired or invalid");
+    }
+    if (!r.ok) {
+      const body = await r.text();
+      const err = new Error(`GitHub API ${r.status}: ${body}`);
+      err.status = r.status;
+      throw err;
+    }
+    const data = await r.json();
+    const link = r.headers.get("link") || "";
+    const hasMore = /rel="next"/.test(link);
+    res.json({ items: data, hasMore });
   } catch (err) {
     console.error("Error fetching pulls:", err.message);
     res.status(err.status || 500).json({ error: err.message });

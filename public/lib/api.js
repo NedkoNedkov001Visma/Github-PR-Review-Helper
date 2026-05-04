@@ -103,6 +103,12 @@ export async function fetchRepoUsers(owner, repo) {
  * @param {string[]} authors      empty array = no filter
  * @param {string[]} reviewers
  * @param {string[]} participants
+ * @param {number}   [page=1]     1-based page number for the unfiltered path
+ *
+ * Returns `{ items: PR[], hasMore: boolean }`. With user filters active,
+ * `hasMore` is always `false` because the server returns the full
+ * filtered set at once (filter pagination across multiple parallel
+ * search queries doesn't compose cleanly).
  */
 export async function fetchPulls(
   owner,
@@ -110,9 +116,10 @@ export async function fetchPulls(
   state = "open",
   authors = [],
   reviewers = [],
-  participants = []
+  participants = [],
+  page = 1
 ) {
-  const params = new URLSearchParams({ state });
+  const params = new URLSearchParams({ state, page: String(page) });
   for (const a of authors) params.append("author", a);
   for (const r of reviewers) params.append("reviewer", r);
   for (const p of participants) params.append("participant", p);
