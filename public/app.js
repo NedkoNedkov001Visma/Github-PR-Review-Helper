@@ -5,6 +5,7 @@ import {
   fetchActions,
   fetchCurrentUser,
   fetchCommit,
+  fetchFileContent,
   approvePR,
   mergePR,
 } from "./lib/api.js";
@@ -1049,6 +1050,34 @@ function initTreeHoverTooltip() {
 // into view and flashed.
 
 let filePreviewLastFocus = null;
+// Per-file cache of the full file text so toggling the checkbox a
+// second time doesn't refetch from the server.
+const fullFileCache = new Map();
+// Last-opened state — held for the modal's lifetime so the checkbox
+// handler knows what to re-render against.
+let activeFilePreview = null;
+
+// Per-repo "Show full file" preference. Setting it once means every
+// subsequent file preview in that repo opens in full-file mode by
+// default (still uses the existing fetch + cache machinery).
+function fullFilePrefKey(owner, repo) {
+  return `pr-reviewer-file-preview-full-file:${owner}/${repo}`;
+}
+function loadFullFilePref(owner, repo) {
+  try {
+    return localStorage.getItem(fullFilePrefKey(owner, repo)) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveFullFilePref(owner, repo, on) {
+  try {
+    if (on) localStorage.setItem(fullFilePrefKey(owner, repo), "1");
+    else localStorage.removeItem(fullFilePrefKey(owner, repo));
+  } catch {
+    /* ignore quota */
+  }
+}
 
 async function openFilePreview(filename, threadRootId) {
   const modal = document.getElementById("file-preview-modal");
@@ -1062,6 +1091,16 @@ async function openFilePreview(filename, threadRootId) {
   title.textContent = filename;
   body.innerHTML = '<div class="modal-loading">Loading diff...</div>';
 
+  // Restore the per-repo "Show full file" preference into the checkbox
+  // so a single toggle sticks across previews in the same repository.
+  const fullFileCb = document.getElementById("file-preview-full-file-cb");
+  const wantFull = currentPR
+    ? loadFullFilePref(currentPR.owner, currentPR.repo)
+    : false;
+  if (fullFileCb) fullFileCb.checked = wantFull;
+
+  activeFilePreview = { filename, threadRootId };
+
   try {
     const file = (currentPRData?.files || []).find(
       (f) => f.filename === filename
@@ -1069,15 +1108,86 @@ async function openFilePreview(filename, threadRootId) {
     if (!file) {
       throw new Error(`File "${filename}" not found in this PR's diff.`);
     }
+    activeFilePreview.file = file;
     const { renderFilePreview } = await import("./lib/diff-renderer.js");
+    activeFilePreview.renderer = renderFilePreview;
+    if (wantFull) {
+      // Defer to the same code path that the checkbox uses, so the
+      // user-facing rendering is identical whether they toggled it
+      // mid-modal or it came from the saved pref.
+      await refreshFilePreview(true);
+    } else {
+      body.innerHTML = "";
+      body.appendChild(
+        renderFilePreview(file, currentPRThreads || [], {
+          highlightThreadId: threadRootId,
+        })
+      );
+    }
+  } catch (err) {
+    body.innerHTML = `<div class="modal-error">${escapeHtml(err.message || "Failed to render file diff.")}</div>`;
+  }
+}
+
+/**
+ * Re-render the file-preview body with or without the full file body.
+ * Called from the "Show full file" checkbox change handler.
+ */
+async function refreshFilePreview(showFullFile) {
+  if (!activeFilePreview) return;
+  const body = document.getElementById("file-preview-body");
+  if (!body) return;
+  const { filename, threadRootId, file, renderer } = activeFilePreview;
+  if (!file || !renderer) return;
+
+  if (!showFullFile) {
+    // Switch back to the patch-only diff
     body.innerHTML = "";
     body.appendChild(
-      renderFilePreview(file, currentPRThreads || [], {
+      renderer(file, currentPRThreads || [], { highlightThreadId: threadRootId })
+    );
+    return;
+  }
+
+  // Full-file mode — fetch (or read cache) then render
+  body.innerHTML = '<div class="modal-loading">Loading file...</div>';
+  try {
+    const headSha = currentPRData?.pr?.head?.sha;
+    if (!headSha) throw new Error("PR head SHA unavailable");
+    const cacheKey = `${currentPR.owner}/${currentPR.repo}/${headSha}/${filename}`;
+    let text = fullFileCache.get(cacheKey);
+    if (text == null) {
+      text = await fetchFileContent(
+        currentPR.owner,
+        currentPR.repo,
+        filename,
+        headSha
+      );
+      fullFileCache.set(cacheKey, text);
+    }
+    // Pick a sensible scroll target: the comment's line if a thread
+    // triggered the preview, otherwise the first added line.
+    let scrollToLine = null;
+    if (threadRootId) {
+      const thread = (currentPRThreads || []).find(
+        (t) => t.root && String(t.root.id) === String(threadRootId)
+      );
+      const root = thread?.root;
+      scrollToLine = root?.line || root?.original_line || null;
+    }
+    body.innerHTML = "";
+    body.appendChild(
+      renderer(file, currentPRThreads || [], {
         highlightThreadId: threadRootId,
+        fullFileText: text,
+        scrollToLine,
       })
     );
   } catch (err) {
-    body.innerHTML = `<div class="modal-error">${escapeHtml(err.message || "Failed to render file diff.")}</div>`;
+    body.innerHTML = `<div class="modal-error">${escapeHtml(err.message || "Failed to load full file.")}</div>`;
+    // Reset the checkbox so the UI doesn't claim full-file mode while showing an error
+    const fullFileCb = document.getElementById("file-preview-full-file-cb");
+    if (fullFileCb) fullFileCb.checked = false;
   }
 }
 
@@ -1102,6 +1212,18 @@ function initFilePreviewModal() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !modal.hidden) closeFilePreview();
   });
+
+  const fullFileCb = document.getElementById("file-preview-full-file-cb");
+  if (fullFileCb) {
+    fullFileCb.addEventListener("change", () => {
+      // Persist the choice per repository so subsequent previews in
+      // the same repo open in the same mode.
+      if (currentPR) {
+        saveFullFilePref(currentPR.owner, currentPR.repo, fullFileCb.checked);
+      }
+      refreshFilePreview(fullFileCb.checked);
+    });
+  }
 
   // Delegated handler: any click on a clickable file-path badge or diff
   // hunk inside a review-thread container opens the preview modal.

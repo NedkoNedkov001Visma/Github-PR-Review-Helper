@@ -2721,6 +2721,31 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
   border-radius: var(--radius);
 }
 
+/* "Show full file" toggle in the file-preview modal header. Sits
+   between the title and the close button. */
+.file-preview-fullfile-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  margin-right: 12px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  transition: border-color var(--transition), color var(--transition);
+}
+.file-preview-fullfile-toggle:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.file-preview-fullfile-toggle input { margin: 0; cursor: pointer; accent-color: var(--fg-accent); }
+
 /* Compact one-file diff used inside the file-preview modal */
 .file-preview { display: flex; flex-direction: column; min-height: 0; }
 .file-preview-header {
@@ -2748,6 +2773,36 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
   border: none;
   border-radius: 0;
   margin: 0;
+}
+
+/* Wrap that contains the scroll container + scrollbar markers. The
+   markers overlay the native scrollbar area on the right edge with
+   `pointer-events: none` so the scrollbar still works as expected. */
+.file-preview-scroll-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.file-preview-scroll-wrap > .file-preview-scroll {
+  flex: 1;
+}
+.file-preview-scroll-marks {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  pointer-events: none;
+  z-index: 2;
+}
+.file-preview-mark {
+  position: absolute;
+  right: 3px;
+  width: 6px;
+  background: var(--open);
+  border-radius: 2px;
+  opacity: 0.7;
 }
 .file-preview-name {
   font-family: var(--font-mono);

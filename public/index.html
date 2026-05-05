@@ -36,6 +36,10 @@
     <div class="modal-content modal-content-wide" role="dialog" aria-labelledby="file-preview-title">
       <div class="modal-header">
         <h2 id="file-preview-title">File diff</h2>
+        <label class="file-preview-fullfile-toggle" title="Show the entire file at the PR head, with changed lines highlighted">
+          <input type="checkbox" id="file-preview-full-file-cb" />
+          <span>Show full file</span>
+        </label>
         <button class="modal-close" type="button" data-close aria-label="Close">&times;</button>
       </div>
       <div id="file-preview-body"></div>

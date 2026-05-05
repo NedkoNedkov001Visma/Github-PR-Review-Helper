@@ -382,6 +382,9 @@ function statusLabel(status) {
  *   is rendered inline (every other thread on the file is hidden) and the
  *   matching row is scrolled to + flashed. Keeps the preview focused on
  *   the comment that triggered it.
+ * @param {string} [opts.fullFileText]  Raw file contents at the PR head.
+ *   When provided, the preview renders the WHOLE file (with patch-added
+ *   lines highlighted in green) instead of just the changed hunks.
  * @returns {HTMLElement}
  */
 export function renderFilePreview(file, threads = [], opts = {}) {
@@ -415,6 +418,77 @@ export function renderFilePreview(file, threads = [], opts = {}) {
         ? `Renamed from ${file.previous_filename || "?"}`
         : "Binary file or no diff available.";
     wrap.appendChild(placeholder);
+    return wrap;
+  }
+
+  // ── Full-file mode ────────────────────────────────────────────
+  // Render every line of the file, marking lines that were added or
+  // modified by this PR. Deletions can't be shown here since they
+  // don't exist in the head text — the user can uncheck the toggle
+  // to drop back to the regular hunked diff.
+  if (typeof opts.fullFileText === "string") {
+    const addedLineNos = collectAddedLineNumbers(file.patch);
+    const deletionsBeforeLine = collectDeletionsByHeadLine(file.patch);
+    const totalLines = countLines(opts.fullFileText);
+
+    // Same per-comment scoping as the patch view: when the modal was
+    // triggered from a comment, only that thread is woven in.
+    let threadsToRender = threads || [];
+    if (opts.highlightThreadId != null) {
+      const targetId = String(opts.highlightThreadId);
+      threadsToRender = threadsToRender.filter(
+        (t) => t.root && String(t.root.id) === targetId
+      );
+    }
+    const commentMap = buildCommentPositionMap(threadsToRender, file.filename);
+
+    const table = renderFullFileTable(
+      opts.fullFileText,
+      addedLineNos,
+      deletionsBeforeLine,
+      commentMap
+    );
+
+    // Wrap the scroll area so we can overlay scrollbar markers
+    // on top of the native scrollbar showing where changes cluster.
+    const scrollWrap = document.createElement("div");
+    scrollWrap.className = "file-preview-scroll-wrap";
+    const scroll = document.createElement("div");
+    scroll.className = "file-preview-scroll";
+    scroll.appendChild(table);
+    scrollWrap.appendChild(scroll);
+
+    // Scrollbar markers cover both additions and deletion anchors so
+    // pure-removal hunks are still visible in the gutter.
+    const changedLineNos = new Set(addedLineNos);
+    for (const k of deletionsBeforeLine.keys()) {
+      if (Number.isFinite(k) && k >= 1 && k <= totalLines + 1) {
+        changedLineNos.add(k);
+      }
+    }
+    const marks = buildScrollMarks(changedLineNos, totalLines);
+    if (marks) scrollWrap.appendChild(marks);
+
+    wrap.appendChild(scrollWrap);
+
+    // Try to scroll to the first added line (or the comment line if
+    // a thread triggered this preview), so users land near the change
+    // rather than at the top of a long file.
+    const targetLine =
+      opts.scrollToLine || (addedLineNos.size ? Math.min(...addedLineNos) : null);
+    if (targetLine) {
+      requestAnimationFrame(() => {
+        const row = wrap.querySelector(
+          `tr[data-line="${targetLine}"]`
+        );
+        if (row) {
+          row.scrollIntoView({ behavior: "instant", block: "center" });
+          row.classList.add("jump-flash");
+          setTimeout(() => row.classList.remove("jump-flash"), 2000);
+        }
+      });
+    }
+
     return wrap;
   }
 
@@ -455,6 +529,269 @@ export function renderFilePreview(file, threads = [], opts = {}) {
   }
 
   return wrap;
+}
+
+/**
+ * Walk the patch's hunks and return the set of head-side (new) line
+ * numbers that are additions. Used by the full-file mode to highlight
+ * which lines this PR introduced.
+ */
+function collectAddedLineNumbers(patch) {
+  const added = new Set();
+  if (!patch) return added;
+  const hunks = parsePatch(patch);
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.type === "addition" && line.newLineNo != null) {
+        added.add(line.newLineNo);
+      }
+    }
+  }
+  return added;
+}
+
+/**
+ * Build a map of head-side line numbers → array of deletion lines that
+ * should be displayed BEFORE that head line. Used by full-file mode to
+ * weave deletions in at the right positions so modifications display
+ * as a red-minus row immediately followed by a green-plus row.
+ *
+ * Deletions that fall after the last head line in the file (lines
+ * removed at the very end) are stored at key `Infinity` so the
+ * renderer can append them at the bottom.
+ */
+function collectDeletionsByHeadLine(patch) {
+  const map = new Map();
+  if (!patch) return map;
+  const hunks = parsePatch(patch);
+  for (const hunk of hunks) {
+    let pending = []; // deletions waiting for the next head-side anchor
+    let lastHeadLine = null;
+    for (const line of hunk.lines) {
+      if (line.type === "deletion") {
+        pending.push({
+          oldLineNo: line.oldLineNo ?? null,
+          content: line.content || "",
+        });
+        continue;
+      }
+      // context or addition — these have a newLineNo; flush pending
+      // deletions BEFORE this head line.
+      if (line.newLineNo != null) {
+        if (pending.length) {
+          const existing = map.get(line.newLineNo) || [];
+          map.set(line.newLineNo, existing.concat(pending));
+          pending = [];
+        }
+        lastHeadLine = line.newLineNo;
+      }
+    }
+    // Deletions remaining after the last context/addition of the hunk
+    // belong AFTER `lastHeadLine` (or at the file end if the hunk had
+    // no head lines at all — pure deletion hunks).
+    if (pending.length) {
+      const anchor = lastHeadLine != null ? lastHeadLine + 1 : Infinity;
+      const existing = map.get(anchor) || [];
+      map.set(anchor, existing.concat(pending));
+    }
+  }
+  return map;
+}
+
+/** Count actual lines, matching how the table is rendered. */
+function countLines(text) {
+  const lines = text.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines.length;
+}
+
+/**
+ * Build the absolute-positioned `.file-preview-scroll-marks` overlay
+ * showing where added lines cluster on the scrollbar. Consecutive
+ * added line numbers are coalesced into single ticks so a 1000-line
+ * file with 600 changes doesn't produce 600 individual marks.
+ *
+ * Each tick's `top` and `height` are percentages of the total line
+ * count, which corresponds 1:1 to scroll progress because every row
+ * has the same height.
+ */
+function buildScrollMarks(addedLineNos, totalLines) {
+  if (!totalLines || addedLineNos.size === 0) return null;
+  const sorted = [...addedLineNos].sort((a, b) => a - b);
+  const ranges = [];
+  let runStart = sorted[0];
+  let prev = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    const n = sorted[i];
+    if (n === prev + 1) {
+      prev = n;
+    } else {
+      ranges.push([runStart, prev]);
+      runStart = n;
+      prev = n;
+    }
+  }
+  ranges.push([runStart, prev]);
+
+  const wrap = document.createElement("div");
+  wrap.className = "file-preview-scroll-marks";
+  wrap.setAttribute("aria-hidden", "true");
+  for (const [start, end] of ranges) {
+    const tick = document.createElement("div");
+    tick.className = "file-preview-mark";
+    const topPct = ((start - 1) / totalLines) * 100;
+    const heightPct = ((end - start + 1) / totalLines) * 100;
+    tick.style.top = `${topPct}%`;
+    // Floor to 2px so single-line changes stay visible
+    tick.style.height = `max(2px, ${heightPct}%)`;
+    tick.title = start === end ? `Line ${start}` : `Lines ${start}–${end}`;
+    wrap.appendChild(tick);
+  }
+  return wrap;
+}
+
+/**
+ * Render the full file as a diff table that's structurally identical
+ * to `renderDiffTable`'s output — same `diff-line` rows, same two
+ * line-number columns (old + new), same marker glyphs, same colour
+ * classes. The whole file is treated as a single synthetic hunk with
+ * deletions woven in at their patch positions so modifications still
+ * read as `red minus` → `green plus` pairs.
+ *
+ * Reusing the same DOM means the patch view and the full-file view
+ * pick up the same CSS automatically — they just differ in how much
+ * surrounding context they show.
+ *
+ * @param {string} text                File contents at head
+ * @param {Set<number>} addedLineNos   Head line numbers added by this PR
+ * @param {Map<number, Array<{oldLineNo, content}>>} [deletionsBeforeLine]
+ * @param {Map<string, Object[]>} [commentMap]  side:line keys → review threads
+ */
+function renderFullFileTable(
+  text,
+  addedLineNos,
+  deletionsBeforeLine,
+  commentMap
+) {
+  const table = document.createElement("table");
+  table.className = "diff-table";
+
+  const lines = text.split("\n");
+  // Strip a single trailing empty line caused by a final \n
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+
+  // Append any review threads attached to this line — same lookup
+  // logic as renderDiffTable so behaviour is identical.
+  const appendCommentRows = (line) => {
+    if (!commentMap) return;
+    const keys = [];
+    if (line.newLineNo != null) keys.push(`RIGHT:${line.newLineNo}`);
+    if (line.oldLineNo != null) keys.push(`LEFT:${line.oldLineNo}`);
+    for (const key of keys) {
+      const threads = commentMap.get(key);
+      if (!threads) continue;
+      for (const thread of threads) {
+        const commentRow = document.createElement("tr");
+        commentRow.className = "diff-comment-row";
+        if (thread.root && thread.root.id) {
+          commentRow.id = `thread-${thread.root.id}`;
+        }
+        const commentCell = document.createElement("td");
+        commentCell.colSpan = 3;
+        commentCell.appendChild(renderInlineThread(thread));
+        commentRow.appendChild(commentCell);
+        table.appendChild(commentRow);
+      }
+    }
+  };
+
+  const appendDiffLine = (line) => {
+    const tr = document.createElement("tr");
+    tr.className = `diff-line ${line.type}`;
+    if (line.newLineNo != null) tr.dataset.line = String(line.newLineNo);
+
+    const oldTd = document.createElement("td");
+    oldTd.className = "line-no old";
+    oldTd.textContent = line.oldLineNo != null ? String(line.oldLineNo) : "";
+    tr.appendChild(oldTd);
+
+    const newTd = document.createElement("td");
+    newTd.className = "line-no new";
+    newTd.textContent = line.newLineNo != null ? String(line.newLineNo) : "";
+    tr.appendChild(newTd);
+
+    const contentTd = document.createElement("td");
+    contentTd.className = "diff-content";
+    const marker = document.createElement("span");
+    marker.className = "diff-marker";
+    if (line.type === "addition") marker.textContent = "+";
+    else if (line.type === "deletion") marker.textContent = "-";
+    else marker.textContent = " ";
+    contentTd.appendChild(marker);
+    contentTd.appendChild(document.createTextNode(line.content));
+    tr.appendChild(contentTd);
+
+    table.appendChild(tr);
+    appendCommentRows(line);
+  };
+
+  // Walk every head line. Maintain a running base-line counter so
+  // context and deletion rows get the right "old" line numbers
+  // outside of patch hunks too.
+  let baseLineNo = 1;
+  const flushDeletionsAt = (anchor) => {
+    if (!deletionsBeforeLine) return;
+    const entries = deletionsBeforeLine.get(anchor);
+    if (!entries) return;
+    for (const del of entries) {
+      // Prefer the patch's own oldLineNo (authoritative for hunks);
+      // fall back to our running counter outside hunks.
+      const oldLineNo = del.oldLineNo != null ? del.oldLineNo : baseLineNo;
+      appendDiffLine({
+        type: "deletion",
+        content: del.content,
+        oldLineNo,
+        newLineNo: null,
+      });
+      baseLineNo = oldLineNo + 1;
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineNo = i + 1;
+
+    // Deletions the patch placed BEFORE this head line render first.
+    flushDeletionsAt(lineNo);
+
+    const isAdded = addedLineNos.has(lineNo);
+    if (isAdded) {
+      // No old line number — this content didn't exist before.
+      appendDiffLine({
+        type: "addition",
+        content: lines[i],
+        oldLineNo: null,
+        newLineNo: lineNo,
+      });
+      // Base counter stays put.
+    } else {
+      appendDiffLine({
+        type: "context",
+        content: lines[i],
+        oldLineNo: baseLineNo,
+        newLineNo: lineNo,
+      });
+      baseLineNo += 1;
+    }
+  }
+
+  // Deletions queued after the last head line — chunks removed from
+  // the end of the file.
+  if (deletionsBeforeLine) {
+    flushDeletionsAt(lines.length + 1);
+    flushDeletionsAt(Infinity);
+  }
+
+  return table;
 }
 
 export function renderDiffPanel(containerId, files, reviewComments, threadMap, prInfo) {

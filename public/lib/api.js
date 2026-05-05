@@ -1,4 +1,22 @@
 /**
+ * Fetch the raw text contents of a file at a given git ref. Used by
+ * the file-diff preview modal's "Show full file" toggle.
+ */
+export async function fetchFileContent(owner, repo, path, ref) {
+  const params = new URLSearchParams({ path });
+  if (ref) params.set("ref", ref);
+  const res = await fetch(
+    `/api/repos/${owner}/${repo}/contents?${params.toString()}`
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to fetch file contents");
+  }
+  const json = await res.json();
+  return json.content || "";
+}
+
+/**
  * Delete a comment. `kind` is "issue" or "review" — determines which
  * GitHub endpoint the server proxies to.
  */

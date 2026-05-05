@@ -280,6 +280,45 @@ app.get("/api/user", async (req, res) => {
   }
 });
 
+// Raw file contents at a specific ref (commit SHA, branch, or tag).
+// Used by the file-diff preview modal's "Show full file" toggle so the
+// modal can render the entire file (with patch additions highlighted),
+// not just the changed hunks.
+app.get("/api/repos/:owner/:repo/contents", async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const path = req.query.path;
+    const ref = req.query.ref;
+    if (!path) return res.status(400).json({ error: "path is required" });
+    const token = getToken();
+    const url = `${GH_API}/repos/${owner}/${repo}/contents/${encodeURI(path)}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+    const r = await fetch(url, {
+      headers: {
+        Authorization: `token ${token}`,
+        // Raw media type returns the file body directly — no base64
+        Accept: "application/vnd.github.raw+json",
+      },
+    });
+    if (r.status === 401) {
+      clearToken();
+      throw new Error("GitHub token expired or invalid");
+    }
+    if (r.status === 404) {
+      return res.status(404).json({ error: "File not found at this ref" });
+    }
+    if (!r.ok) {
+      const body = await r.text();
+      const err = new Error(`GitHub API ${r.status}: ${body}`);
+      err.status = r.status;
+      throw err;
+    }
+    const text = await r.text();
+    res.json({ content: text });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // Single commit detail (metadata + files + patch).
 app.get("/api/repos/:owner/:repo/commits/:sha", async (req, res) => {
   try {
