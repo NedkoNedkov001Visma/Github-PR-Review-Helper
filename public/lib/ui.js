@@ -6,6 +6,7 @@ import {
   fetchReactions,
   addReaction,
   removeReaction,
+  deleteComment,
 } from "./api.js";
 import { parsePatch } from "./diff-renderer.js";
 
@@ -195,6 +196,47 @@ function REACTION_TITLE(content) {
     case "eyes": return "Eyes";
     default: return content;
   }
+}
+
+/**
+ * Append a delete button to a comment header when the comment was
+ * authored by the current GitHub user (`window.__prReviewerCurrentUser`).
+ *
+ * On click: confirms, calls the server, and on success removes the
+ * `removeOnDelete` element from the DOM. The header click handler
+ * (collapse toggle) is suppressed via stopPropagation.
+ *
+ * @param {HTMLElement} header
+ * @param {object} comment        Raw GitHub comment object
+ * @param {"issue"|"review"} kind
+ * @param {object} prInfo         { owner, repo, number }
+ * @param {HTMLElement} removeOnDelete  Element to remove after a successful DELETE
+ */
+function addDeleteButton(header, comment, kind, prInfo, removeOnDelete) {
+  if (!prInfo) return;
+  const me = window.__prReviewerCurrentUser?.login;
+  if (!me || !comment.user || comment.user.login !== me) return;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "comment-delete-btn";
+  btn.title = "Delete this comment";
+  btn.setAttribute("aria-label", "Delete comment");
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.748 1.748 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"/></svg>`;
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation(); // don't toggle the header's collapse handler
+    if (!confirm("Delete this comment? This cannot be undone.")) return;
+    btn.disabled = true;
+    try {
+      await deleteComment(prInfo.owner, prInfo.repo, prInfo.number, kind, comment.id);
+      if (removeOnDelete && removeOnDelete.remove) removeOnDelete.remove();
+    } catch (err) {
+      console.error("Delete comment failed:", err);
+      alert("Failed to delete comment: " + err.message);
+      btn.disabled = false;
+    }
+  });
+  header.appendChild(btn);
 }
 
 // ---------------------------------------------------------------------------
@@ -911,6 +953,9 @@ export function renderIssueComment(comment, collapseCtx, seenCtx, prInfo = null)
   const ts = el("span", "timestamp", " " + formatTimestamp(comment.created_at));
   header.appendChild(ts);
   markNewIfUnseen(header, commentId, seenCtx);
+  // Delete button for the current user's own comments — removes the
+  // entire timeline-item on success.
+  addDeleteButton(header, comment, "issue", prInfo, item);
   content.appendChild(header);
 
   // Body
@@ -2036,6 +2081,9 @@ function buildCommentBlock(comment, seenCtx, prInfo = null) {
   const ts = el("span", "timestamp", " " + formatTimestamp(comment.created_at || comment.updated_at));
   header.appendChild(ts);
   markNewIfUnseen(header, commentId, seenCtx);
+  // Delete button for the current user's own review-line comments —
+  // removes the entire thread-comment block on success.
+  addDeleteButton(header, comment, "review", prInfo, block);
   block.appendChild(header);
 
   const body = el("div", "comment-body");

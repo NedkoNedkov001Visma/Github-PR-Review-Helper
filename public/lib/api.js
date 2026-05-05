@@ -1,3 +1,19 @@
+/**
+ * Delete a comment. `kind` is "issue" or "review" — determines which
+ * GitHub endpoint the server proxies to.
+ */
+export async function deleteComment(owner, repo, number, kind, commentId) {
+  const res = await fetch(
+    `/api/pr/${owner}/${repo}/${number}/comments/${kind}/${commentId}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(data.error || "Failed to delete comment");
+  }
+  return res.json();
+}
+
 // --- Reactions ---
 
 /** kind: "issue" | "review" */

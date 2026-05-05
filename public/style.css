@@ -1161,6 +1161,34 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
   border-radius: 20px;
 }
 
+/* Delete button on the user's own comments — appears in the comment
+   header. Discreet by default; turns red on hover so the destructive
+   action is obvious before clicking. */
+.comment-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: all var(--transition);
+}
+.comment-header:hover .comment-delete-btn { opacity: 1; }
+.comment-delete-btn:hover {
+  color: var(--closed);
+  background: var(--closed-bg);
+  opacity: 1;
+}
+.comment-delete-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.comment-delete-btn svg { display: block; }
+
 /* === Reaction bar (GitHub emoji reactions on comments) === */
 .reaction-bar {
   position: relative;

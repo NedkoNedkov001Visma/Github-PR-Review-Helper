@@ -658,6 +658,50 @@ app.put("/api/pr/:owner/:repo/:number/merge", async (req, res) => {
   }
 });
 
+// --- Comment deletion ---
+//
+// Two flavors keyed by `kind`:
+//   issue   → DELETE /repos/{o}/{r}/issues/comments/{id}
+//   review  → DELETE /repos/{o}/{r}/pulls/comments/{id}
+// GitHub returns 204 on success.
+
+app.delete(
+  "/api/pr/:owner/:repo/:number/comments/:kind/:id",
+  async (req, res) => {
+    try {
+      const { owner, repo, kind, id } = req.params;
+      if (kind !== "issue" && kind !== "review") {
+        return res.status(400).json({ error: "kind must be 'issue' or 'review'" });
+      }
+      const path =
+        kind === "issue"
+          ? `${GH_API}/repos/${owner}/${repo}/issues/comments/${id}`
+          : `${GH_API}/repos/${owner}/${repo}/pulls/comments/${id}`;
+      const token = getToken();
+      const r = await fetch(path, {
+        method: "DELETE",
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: "application/vnd.github.v3+json",
+        },
+      });
+      if (r.status === 401) {
+        clearToken();
+        throw new Error("GitHub token expired or invalid");
+      }
+      if (!r.ok && r.status !== 204) {
+        const body = await r.text();
+        const err = new Error(`GitHub API ${r.status}: ${body}`);
+        err.status = r.status;
+        throw err;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+);
+
 // --- Reactions (emoji reactions on issue comments + review comments) ---
 //
 // GitHub exposes the same shape for both, but at different URLs:
