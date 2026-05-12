@@ -290,6 +290,12 @@ export function renderMarkdown(text, opts = {}) {
     return `\x00INLINE_${idx}\x00`;
   });
 
+  // Strip HTML comments (e.g. PR-template hints like `<!-- describe ... -->`).
+  // Done after code-block + inline-code extraction so comments inside code
+  // are preserved verbatim. Comments arrive here as `&lt;!-- ... --&gt;`
+  // because we HTML-escaped the source up front.
+  src = src.replace(/&lt;!--[\s\S]*?--&gt;/g, "");
+
   // --- Tables ---
   // Detect runs of pipe-delimited lines (header | separator | body rows).
   // The separator line has cells like :---, ---:, :---:, or just ---.
