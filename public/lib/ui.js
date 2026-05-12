@@ -887,6 +887,20 @@ export function renderPRHeader(pr, containerId = "pr-header", opts = {}) {
 
     container.appendChild(actions);
   }
+
+  // PR description (body). Rendered as markdown, full-width on its own
+  // row at the bottom of the header. Hidden when the PR has no body.
+  if (pr.body && pr.body.trim()) {
+    const repoFullForCtx = pr.base?.repo?.full_name;
+    const repoCtx = repoFullForCtx
+      ? { owner: repoFullForCtx.split("/")[0], repo: repoFullForCtx.split("/")[1] }
+      : undefined;
+    const desc = el("div", "pr-description");
+    const inner = el("div", "comment-body-inner");
+    inner.innerHTML = renderMarkdown(pr.body, { repoCtx });
+    desc.appendChild(inner);
+    container.appendChild(desc);
+  }
 }
 
 // Inline SVG helpers used by the header badge / buttons

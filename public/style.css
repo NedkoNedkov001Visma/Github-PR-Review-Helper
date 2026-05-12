@@ -624,6 +624,14 @@ header {
   transition: color var(--transition);
 }
 .pr-number-link:hover { color: var(--fg-accent); text-decoration: underline; }
+.pr-description {
+  flex-basis: 100%;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-muted, var(--border));
+  font-size: 14px;
+  line-height: 1.5;
+}
 
 /* === Current repo header on Index page === */
 #current-repo-header { margin: 8px 0 16px; }
