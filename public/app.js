@@ -12,7 +12,13 @@ import {
 import { renderCommitDetail } from "./lib/commit-detail-renderer.js";
 import { renderActionsPanel } from "./lib/actions-renderer.js";
 import { buildTimeline } from "./lib/timeline.js";
-import { classifyTimeline, groupReviewCommentThreads } from "./lib/classifier.js";
+import {
+  classifyTimeline,
+  groupReviewCommentThreads,
+  setExtraAIBots,
+  getBuiltinAIBots,
+  getExtraAIBots,
+} from "./lib/classifier.js";
 import { renderDiffPanel } from "./lib/diff-renderer.js";
 import { renderCommitsPanel } from "./lib/commits-renderer.js";
 import {
@@ -47,6 +53,38 @@ async function ensureCurrentUser() {
   window.__prReviewerCurrentUser = currentUser;
   return currentUser;
 }
+
+// --- Settings: extra AI bot logins ---
+//
+// Persisted as a JSON array of strings under
+// `pr-reviewer-extra-ai-bots`. The classifier consults this list at
+// classify time via `isAIBot`, so changes apply to the next render
+// (and we also reload any open PR after a settings change so the user
+// sees the effect immediately).
+
+const EXTRA_AI_BOTS_KEY = "pr-reviewer-extra-ai-bots";
+
+function loadExtraAIBots() {
+  try {
+    const raw = localStorage.getItem(EXTRA_AI_BOTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((s) => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function saveExtraAIBots(list) {
+  try {
+    localStorage.setItem(EXTRA_AI_BOTS_KEY, JSON.stringify(list));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+// Apply any persisted extras to the classifier as soon as the module
+// loads — before any render that calls `isAIBot` runs.
+setExtraAIBots(loadExtraAIBots());
 
 // --- URL parsing ---
 
@@ -1699,6 +1737,15 @@ function initTabs() {
 
 function handleHash() {
   const hash = location.hash.slice(1);
+  // Settings route — show the settings page, hide other panels.
+  if (hash === "settings" || hash.startsWith("settings/")) {
+    showSettingsPanel();
+    return;
+  }
+  // For any non-settings route, hide the settings panel if it was open.
+  const settingsPanel = document.getElementById("settings-panel");
+  if (settingsPanel) settingsPanel.hidden = true;
+
   if (!hash) {
     document.getElementById("index-panel").hidden = false;
     document.getElementById("pr-panel").hidden = true;
@@ -1978,6 +2025,117 @@ function initClearDataModal() {
   });
 }
 
+// --- Settings page ---
+
+/**
+ * Render the AI Comments settings tab — list of user-added bots
+ * with remove buttons, plus a read-only built-in list.
+ */
+function renderSettingsAIComments() {
+  const extraList = document.getElementById("settings-extra-bot-list");
+  const builtinList = document.getElementById("settings-builtin-bot-list");
+  if (!extraList || !builtinList) return;
+
+  // Custom (user-added) bots — removable
+  const extras = getExtraAIBots();
+  extraList.innerHTML = "";
+  if (extras.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "settings-bot-empty muted";
+    empty.textContent = "None added yet.";
+    extraList.appendChild(empty);
+  } else {
+    for (const login of extras) {
+      const li = document.createElement("li");
+      li.className = "settings-bot-row";
+      const name = document.createElement("code");
+      name.className = "settings-bot-name";
+      name.textContent = login;
+      li.appendChild(name);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "settings-bot-remove";
+      remove.title = `Remove ${login}`;
+      remove.setAttribute("aria-label", `Remove ${login}`);
+      remove.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
+      remove.addEventListener("click", () => removeExtraBot(login));
+      li.appendChild(remove);
+      extraList.appendChild(li);
+    }
+  }
+
+  // Built-in bots — read-only
+  builtinList.innerHTML = "";
+  for (const login of getBuiltinAIBots()) {
+    const li = document.createElement("li");
+    li.className = "settings-bot-row";
+    const name = document.createElement("code");
+    name.className = "settings-bot-name";
+    name.textContent = login;
+    li.appendChild(name);
+    builtinList.appendChild(li);
+  }
+}
+
+/**
+ * Common code path for add and remove: persist, push the new list into
+ * the classifier, re-render the settings list, and re-classify any
+ * currently-loaded PR so the change is visible immediately.
+ */
+function applyExtraBotsChange(next) {
+  const cleaned = [
+    ...new Set(
+      next
+        .map((s) => String(s).trim())
+        .filter(Boolean)
+        .map((s) => s.replace(/\[bot\]$/i, "").toLowerCase())
+    ),
+  ].sort();
+  saveExtraAIBots(cleaned);
+  setExtraAIBots(cleaned);
+  renderSettingsAIComments();
+  if (currentPR) {
+    loadPR(currentPR.owner, currentPR.repo, currentPR.number);
+  }
+}
+
+function addExtraBot(login) {
+  if (!login) return;
+  applyExtraBotsChange([...getExtraAIBots(), login]);
+}
+function removeExtraBot(login) {
+  const norm = login.replace(/\[bot\]$/i, "").toLowerCase();
+  applyExtraBotsChange(getExtraAIBots().filter((b) => b !== norm));
+}
+
+function initSettingsPage() {
+  const form = document.getElementById("settings-add-bot-form");
+  const input = document.getElementById("settings-add-bot-input");
+  if (form && input) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const v = input.value.trim();
+      if (!v) return;
+      addExtraBot(v);
+      input.value = "";
+    });
+  }
+  renderSettingsAIComments();
+}
+
+function showSettingsPanel() {
+  const settingsPanel = document.getElementById("settings-panel");
+  if (!settingsPanel) return;
+  document.getElementById("index-panel").hidden = true;
+  document.getElementById("pr-panel").hidden = true;
+  const commitPanel = document.getElementById("commit-panel");
+  if (commitPanel) commitPanel.hidden = true;
+  document.getElementById("current-repo-header").hidden = true;
+  settingsPanel.hidden = false;
+  renderSettingsAIComments();
+  document.title = "Settings · PR Reviewer";
+}
+
 // --- Init ---
 
 function init() {
@@ -2022,6 +2180,7 @@ function init() {
   initCommitPreviewModal();
   initFilePreviewModal();
   initTreeHoverTooltip();
+  initSettingsPage();
   renderRecentRepos();
 
   // When the browser tab becomes visible again, refresh actions data

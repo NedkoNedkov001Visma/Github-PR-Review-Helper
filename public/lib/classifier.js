@@ -7,14 +7,42 @@
 
 // ── Known AI bot logins ──────────────────────────────────────────────────────
 
-const AI_BOTS = new Set([
+const BUILTIN_AI_BOTS = new Set([
   'claude',
   'copilot',
   'copilot-pull-request-reviewer',
   'copilot-swe-agent',
   'github-actions',
   'github-code-quality',
+  'advisor-claude-reviewer',
 ]);
+
+// User-extendable set populated from settings (localStorage). Logins
+// here are normalised (lower-case, no `[bot]` suffix) before being added.
+let EXTRA_AI_BOTS = new Set();
+
+/**
+ * Replace the user-supplied AI bot list. Called on boot from app.js
+ * with the persisted settings, and again whenever the settings page
+ * mutates the list. Logins are normalised in the same way as
+ * `isAIBot`'s comparison so case/`[bot]` mismatches don't matter.
+ */
+export function setExtraAIBots(logins) {
+  EXTRA_AI_BOTS = new Set(
+    (logins || [])
+      .map((s) => String(s).trim())
+      .filter(Boolean)
+      .map((s) => s.replace(/\[bot\]$/i, '').toLowerCase())
+  );
+}
+
+/** Read-only views — used by the settings page UI. */
+export function getBuiltinAIBots() {
+  return [...BUILTIN_AI_BOTS].sort();
+}
+export function getExtraAIBots() {
+  return [...EXTRA_AI_BOTS].sort();
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,7 +58,7 @@ const AI_BOTS = new Set([
 export function isAIBot(login) {
   if (!login) return false;
   const normalised = login.replace(/\[bot\]$/i, '').toLowerCase();
-  return AI_BOTS.has(normalised);
+  return BUILTIN_AI_BOTS.has(normalised) || EXTRA_AI_BOTS.has(normalised);
 }
 
 /**
