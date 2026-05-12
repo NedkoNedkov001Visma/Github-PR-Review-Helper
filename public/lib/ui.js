@@ -263,8 +263,13 @@ const SAFE_TAG_RE = new RegExp(
 export function renderMarkdown(text, opts = {}) {
   if (!text) return "";
 
+  // Normalize line endings — GitHub returns Windows-edited bodies with
+  // CRLF, which would slip through the `\n\n+` paragraph regex and leave
+  // a trail of stray `<br>` tags between paragraphs.
+  let src = text.replace(/\r\n?/g, "\n");
+
   // HTML-escape to prevent XSS
-  let src = text
+  src = src
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -412,6 +417,15 @@ export function renderMarkdown(text, opts = {}) {
     }
   );
 
+  // Ensure block-level elements are surrounded by blank lines so the
+  // upcoming paragraph splitter puts each one in its own slot. Without
+  // this, prose that directly follows a heading (no blank line in the
+  // source) gets stranded outside a `<p>` after the cleanup step strips
+  // the `<p>` that wraps the leading block tag.
+  const BLOCK_AROUND = "h[1-6]|ul|ol|blockquote|pre|table";
+  src = src.replace(new RegExp(`(<(?:${BLOCK_AROUND})(?:\\s[^>]*)?>)`, "g"), "\n\n$1");
+  src = src.replace(new RegExp(`(</(?:${BLOCK_AROUND})>)`, "g"), "$1\n\n");
+
   // Paragraphs — double newline
   src = src.replace(/\n\n+/g, "</p><p>");
   src = `<p>${src}</p>`;
@@ -429,6 +443,18 @@ export function renderMarkdown(text, opts = {}) {
 
   // Line breaks — single newline inside paragraphs
   src = src.replace(/\n/g, "<br>");
+
+  // Strip <br> adjacent to structural block tags (including the paragraph
+  // tag itself). These are artifacts of `\n` → `<br>` catching newlines
+  // that were structural whitespace, not soft line breaks. With this
+  // cleanup, only soft breaks inside prose paragraphs survive as <br>.
+  const BR_ADJ = "h1|h2|h3|h4|h5|h6|p|li|ul|ol|pre|blockquote|table|details|summary|hr";
+  src = src.replace(new RegExp(`(<br>\\s*)+(?=</?(?:${BR_ADJ})[\\s>])`, "g"), "");
+  src = src.replace(new RegExp(`(</?(?:${BR_ADJ})[^>]*>)(?:\\s*<br>)+`, "g"), "$1");
+
+  // Drop now-empty <p> blocks left by block-padding adding `\n\n` at the
+  // very start, or by HTML-comment strip clearing a whole paragraph.
+  src = src.replace(/<p>\s*<\/p>/g, "");
 
   // Restore inline code
   src = src.replace(/\x00INLINE_(\d+)\x00/g, (_m, idx) => inlineCodes[idx]);

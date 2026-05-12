@@ -2253,6 +2253,12 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
 .inline-thread-body { line-height: 1.5; }
 
 /* === Markdown rendered content === */
+.comment-body-inner h1,
+.comment-body-inner h2,
+.comment-body-inner h3,
+.comment-body-inner h4,
+.comment-body-inner h5,
+.comment-body-inner h6 { margin: 16px 0 8px; }
 .comment-body-inner h1 { font-size: 1.5em; border-bottom: 1px solid var(--border-muted); padding-bottom: 0.3em; }
 .comment-body-inner h2 { font-size: 1.3em; border-bottom: 1px solid var(--border-muted); padding-bottom: 0.3em; }
 .comment-body-inner h3 { font-size: 1.1em; }
@@ -2282,6 +2288,11 @@ a.commit-subject:hover { color: var(--fg-accent); text-decoration: underline; }
 .comment-body-inner a { color: var(--fg-accent); text-decoration: none; }
 .comment-body-inner a:hover { text-decoration: underline; }
 .comment-body-inner ul, .comment-body-inner ol { padding-left: 24px; }
+.comment-body-inner li.task-item { list-style: none; }
+.comment-body-inner li.task-item > input[type="checkbox"] {
+  margin: 0 6px 0 -20px;
+  vertical-align: middle;
+}
 .comment-body-inner table { border-collapse: collapse; margin: 8px 0; }
 .comment-body-inner table th, .comment-body-inner table td { padding: 6px 12px; border: 1px solid var(--border); }
 .comment-body-inner table th { background: var(--bg-subtle); }
