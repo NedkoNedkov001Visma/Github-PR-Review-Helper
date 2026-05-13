@@ -500,19 +500,29 @@ export function formatTimestamp(isoString) {
 // ---------------------------------------------------------------------------
 
 export function showTab(tabName) {
-  document.querySelectorAll("[role='tab']").forEach((btn) => {
-    const selected = btn.dataset.tab === tabName;
-    btn.setAttribute("aria-selected", String(selected));
-    if (selected) {
-      btn.classList.add("active");
-    } else {
-      btn.classList.remove("active");
-    }
-  });
-
-  document.querySelectorAll("[role='tabpanel']").forEach((panel) => {
-    panel.hidden = panel.id !== `panel-${tabName}`;
-  });
+  // Scope both queries to the PR-view tab nav + panels so we don't
+  // touch tabs that live elsewhere (e.g. the settings page tab panel
+  // also uses `role="tab"` / `role="tabpanel"`).
+  const tabNav = document.getElementById("tab-nav");
+  const panelsContainer = document.getElementById("tab-panels");
+  if (tabNav) {
+    tabNav.querySelectorAll("[role='tab']").forEach((btn) => {
+      const selected = btn.dataset.tab === tabName;
+      btn.setAttribute("aria-selected", String(selected));
+      if (selected) {
+        btn.classList.add("active");
+      } else {
+        btn.classList.remove("active");
+      }
+    });
+  }
+  if (panelsContainer) {
+    panelsContainer
+      .querySelectorAll("[role='tabpanel']")
+      .forEach((panel) => {
+        panel.hidden = panel.id !== `panel-${tabName}`;
+      });
+  }
 }
 
 // ---------------------------------------------------------------------------
